@@ -33,7 +33,7 @@ class _NewDmPageState extends ConsumerState<NewDmPage> {
               loading: () => const SizedBox(height: 48, child: Center(child: CircularProgressIndicator())),
               error: (e, _) => Text('$e'),
               data: (list) => DropdownButtonFormField<String>(
-                value: _groupId,
+                initialValue: _groupId,
                 decoration: const InputDecoration(labelText: 'From group', border: OutlineInputBorder()),
                 items: list.map((g) => DropdownMenuItem(value: g.id, child: Text(g.name))).toList(),
                 onChanged: (v) => setState(() => _groupId = v),
@@ -85,10 +85,10 @@ class _NewDmPageState extends ConsumerState<NewDmPage> {
     try {
       final threadId = await ref.read(apiClientProvider).startDm(otherUserId);
       ref.invalidate(dmThreadsProvider);
-      if (!mounted) return;
+      if (!context.mounted) return;
       context.go('/inbox/dm/$threadId');
     } on ApiException catch (e) {
-      if (mounted) toast(context, e.message, error: true);
+      if (context.mounted) toast(context, e.message, error: true);
     }
   }
 }

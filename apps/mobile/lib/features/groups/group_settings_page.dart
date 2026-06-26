@@ -24,6 +24,7 @@ class _GroupSettingsPageState extends ConsumerState<GroupSettingsPage> {
   late final TextEditingController _name;
   late final TextEditingController _desc;
   bool _saving = false;
+  bool _initialized = false;
 
   @override
   void initState() {
@@ -132,9 +133,13 @@ class _GroupSettingsPageState extends ConsumerState<GroupSettingsPage> {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => OEmptyState(icon: Icons.error_outline, title: 'Couldn’t load', subtitle: '$e', action: TextButton(onPressed: () => ref.invalidate(groupDetailProvider(widget.groupId)), child: const Text('Retry'))),
         data: (g) {
-          if (_name.text.isEmpty) {
+          // Seed the controllers exactly once. Mutating them inside build() on
+          // every rebuild previously re-populated the fields and discarded the
+          // user's edits (e.g. clearing the name field was instantly undone).
+          if (!_initialized) {
             _name.text = g.name;
             _desc.text = g.description ?? '';
+            _initialized = true;
           }
           return ListView(
             padding: const EdgeInsets.all(OrdoSpacing.lg),

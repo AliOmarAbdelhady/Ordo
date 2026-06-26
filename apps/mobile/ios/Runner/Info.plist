@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Reason strings shown when requesting location permission for opt-in
+	     group location sharing. Required by iOS or the app is rejected. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Ordo uses your location to share it with group members when you opt in.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Ordo uses your location to share it with group members when you opt in.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

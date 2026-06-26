@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/api.dart';
 import '../../core/app_theme.dart';
+import '../../core/auth_controller.dart';
 import '../../shared/widgets.dart';
 
 /// OTP verification for phone/email. In development the issued code is returned
@@ -57,14 +58,16 @@ class _OtpPageState extends ConsumerState<OtpPage> {
     }
     setState(() => _verifying = true);
     try {
-      final ok = await ref.read(apiClientProvider).verifyOtp(widget.target, widget.value, _code.text.trim(), widget.purpose);
+      // Authenticated verify: validates the code AND marks the contact verified
+      // server-side (the public verifyOtp only checked the code).
+      await ref
+          .read(apiClientProvider)
+          .verifyContact(widget.target, widget.value, _code.text.trim(), widget.purpose);
       if (!mounted) return;
-      if (ok) {
-        toast(context, 'Verified ✓');
-        context.go('/today');
-      } else {
-        toast(context, 'Invalid code', error: true);
-      }
+      // Refresh the cached user so the verified flags update in the UI.
+      ref.invalidate(authControllerProvider);
+      toast(context, 'Verified ✓');
+      context.go('/today');
     } on ApiException catch (e) {
       if (mounted) toast(context, e.message, error: true);
     } finally {

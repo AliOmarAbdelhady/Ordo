@@ -19,9 +19,18 @@ interface SocketData {
   userId?: string;
 }
 
-@WebSocketGateway({
-  cors: { origin: (process.env.CORS_ORIGIN ?? 'http://localhost:3000').split(','), credentials: true },
-})
+// Mirror the HTTP CORS hardening in main.ts: an explicit allowlist enables
+// credentials; '*' reflects the origin WITHOUT credentials (the API uses Bearer
+// tokens, not cookies); unset falls back to the dev origin. Never combine a
+// reflected wildcard with credentials.
+const _corsList = (process.env.CORS_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const _corsWildcard = _corsList.includes('*');
+const GATEWAY_CORS = {
+  origin: _corsWildcard ? true : _corsList.length ? _corsList : 'http://localhost:3000',
+  credentials: !_corsWildcard,
+};
+
+@WebSocketGateway({ cors: GATEWAY_CORS })
 export class RealtimeGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
 {
@@ -75,6 +84,10 @@ export class RealtimeGateway
   onTyping(@ConnectedSocket() client: Socket, @MessageBody() body: { groupId: string; isTyping: boolean }) {
     const userId = (client.data as SocketData).userId;
     if (!userId || !body?.groupId) return;
+    // Only broadcast if this socket is actually in the target group's room.
+    // Rooms are populated from the user's ACTIVE memberships at connection, so
+    // this stops a client from emitting typing into a group it isn't a member of.
+    if (!client.rooms.has(`group:${body.groupId}`)) return;
     client.to(`group:${body.groupId}`).emit('chat:typing', { groupId: body.groupId, userId, isTyping: body.isTyping });
   }
 

@@ -1,11 +1,11 @@
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 
 export class CreateMessageDto {
   @IsString()
   @MaxLength(4000)
   body!: string;
 
-  @IsString()
+  @IsUUID()
   @IsOptional()
   replyToId?: string;
 }
@@ -18,6 +18,7 @@ export class EditMessageDto {
 
 export class ReactDto {
   @IsString()
+  @MaxLength(32)
   emoji!: string;
 }
 

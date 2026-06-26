@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { MessageType, MemberStatus, NotificationType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GroupsService } from '../groups/groups.service';
@@ -52,6 +52,18 @@ export class ChatService {
 
   async send(userId: string, groupId: string, dto: CreateMessageDto): Promise<ChatMessageDto> {
     await this.groups.requirePermission(groupId, userId, 'CHAT_SEND');
+    // A reply must reference an existing, non-deleted message in the SAME group,
+    // otherwise a sender could point replyToId at an arbitrary UUID (including a
+    // message in a group they merely belong to, or a dangling id).
+    if (dto.replyToId) {
+      const parent = await this.prisma.message.findUnique({
+        where: { id: dto.replyToId },
+        select: { groupId: true, deletedAt: true },
+      });
+      if (!parent || parent.deletedAt || parent.groupId !== groupId) {
+        throw new BadRequestException('Invalid reply target');
+      }
+    }
     const message = await this.prisma.message.create({
       data: {
         groupId,

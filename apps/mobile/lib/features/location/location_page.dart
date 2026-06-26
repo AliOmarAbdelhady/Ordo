@@ -1,11 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../../core/api.dart';
 import '../../core/app_theme.dart';
 import '../../core/providers.dart';
 import '../../models/models.dart';
-import '../../shared/format.dart';
 import '../../shared/widgets.dart';
 
 /// Group location sharing — strictly opt-in. Each member controls their own
@@ -20,13 +22,70 @@ class LocationPage extends ConsumerStatefulWidget {
 }
 
 class _LocationPageState extends ConsumerState<LocationPage> {
+  // Foreground position pusher: while this page is open and the user has opted
+  // in, we periodically read the device position and POST it. (Background
+  // sharing would need a dedicated background service — out of scope for MVP.)
+  Timer? _pushTimer;
+
+  @override
+  void dispose() {
+    _stopPushing();
+    super.dispose();
+  }
+
   Future<void> _setMode(String mode) async {
     try {
       await ref.read(apiClientProvider).setLocationShare(widget.groupId, mode);
       ref.invalidate(locationsProvider(widget.groupId));
-      if (mounted) toast(context, mode == 'OFF' ? 'Location sharing off' : 'Sharing your location');
+      if (!mounted) return;
+      if (mode == 'OFF') {
+        _stopPushing();
+        toast(context, 'Location sharing off');
+      } else {
+        toast(context, 'Sharing your location');
+        await _startPushing();
+      }
     } on ApiException catch (e) {
       if (mounted) toast(context, e.message, error: true);
+    }
+  }
+
+  Future<void> _startPushing() async {
+    _stopPushing();
+    // Gracefully no-op when the device/OS won't let us read location.
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      if (mounted) toast(context, 'Enable device location to share live', error: true);
+      return;
+    }
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) {
+      perm = await Geolocator.requestPermission();
+    }
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+      if (mounted) toast(context, 'Location permission denied', error: true);
+      return;
+    }
+    await _pushOnce();
+    _pushTimer = Timer.periodic(const Duration(seconds: 15), (_) => _pushOnce());
+  }
+
+  void _stopPushing() {
+    _pushTimer?.cancel();
+    _pushTimer = null;
+  }
+
+  Future<void> _pushOnce() async {
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+      await ref.read(apiClientProvider).pushLocation(widget.groupId, pos.latitude, pos.longitude);
+      if (mounted) ref.invalidate(locationsProvider(widget.groupId));
+    } catch (_) {
+      // Best-effort: a transient failure is retried on the next tick.
     }
   }
 

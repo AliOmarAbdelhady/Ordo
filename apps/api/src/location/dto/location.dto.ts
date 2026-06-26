@@ -1,8 +1,8 @@
-import { IsDateString, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsEnum, IsNumber, IsOptional } from 'class-validator';
 import { LocationMode } from '@prisma/client';
 
 export class SetShareDto {
-  @IsString()
+  @IsEnum(LocationMode)
   mode!: LocationMode;
 
   @IsOptional()

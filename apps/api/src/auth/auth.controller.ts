@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto, RefreshDto } from './dto/auth.dto';
@@ -69,6 +69,19 @@ export class AuthController {
 
   @Post('verify-phone')
   verifyPhone(@CurrentUser('id') userId: string, @Body() dto: VerifyOtpDto) {
-    return this.auth.verifyOtp(dto).then((r) => this.auth.markVerified(userId, 'phone', dto.value));
+    if (dto.target !== 'phone') {
+      throw new BadRequestException('Use the email verification endpoint to verify an email');
+    }
+    // verifyOtp throws on an invalid/expired code, so markVerified only runs on
+    // success. markVerified normalizes the value and guards ownership.
+    return this.auth.verifyOtp(dto).then(() => this.auth.markVerified(userId, 'phone', dto.value));
+  }
+
+  @Post('verify-email')
+  verifyEmail(@CurrentUser('id') userId: string, @Body() dto: VerifyOtpDto) {
+    if (dto.target !== 'email') {
+      throw new BadRequestException('Use the phone verification endpoint to verify a phone');
+    }
+    return this.auth.verifyOtp(dto).then(() => this.auth.markVerified(userId, 'email', dto.value));
   }
 }

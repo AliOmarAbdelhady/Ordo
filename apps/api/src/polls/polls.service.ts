@@ -100,6 +100,9 @@ export class PollsService {
   async close(userId: string, pollId: string) {
     const poll = await this.prisma.poll.findUnique({ where: { id: pollId } });
     if (!poll) throw new NotFoundException('Poll not found');
+    // Always require ACTIVE membership first, even for the creator — a user who
+    // created a poll and later left/was removed must not be able to act on it.
+    await this.groups.requireMember(poll.groupId, userId);
     const isCreator = poll.createdById === userId;
     if (!isCreator) {
       await this.groups.requirePermission(poll.groupId, userId, 'POLL_CLOSE_ANY');
@@ -115,6 +118,7 @@ export class PollsService {
   async remove(userId: string, pollId: string) {
     const poll = await this.prisma.poll.findUnique({ where: { id: pollId } });
     if (!poll) throw new NotFoundException('Poll not found');
+    await this.groups.requireMember(poll.groupId, userId);
     const isCreator = poll.createdById === userId;
     if (!isCreator) {
       await this.groups.requirePermission(poll.groupId, userId, 'POLL_CLOSE_ANY');

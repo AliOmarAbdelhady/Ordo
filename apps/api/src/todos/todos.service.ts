@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { MemberStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GroupsService } from '../groups/groups.service';
+import { can, Permission } from '../common/permissions';
 import { CreateTodoDto, UpdateTodoDto } from './dto/todo.dto';
 
 export type TodoTab = 'today' | 'upcoming' | 'no_date' | 'done';
@@ -141,7 +142,27 @@ export class TodosService {
   async update(userId: string, todoId: string, dto: UpdateTodoDto): Promise<TodoDto> {
     const todo = await this.prisma.todo.findUnique({ where: { id: todoId } });
     if (!todo) throw new NotFoundException('To-do not found');
-    await this.assertCanMutate(todo, userId);
+
+    const isOwnerCreator = todo.ownerUserId === userId || todo.createdById === userId;
+    if (!isOwnerCreator) {
+      if (!todo.groupId) throw new NotFoundException('To-do not found');
+      // Group to-do: a plain member may only toggle `done` (collaborative
+      // completion). Editing content (title/note/labels/dueAt/order) requires
+      // the creator or an admin (TODO_UPDATE_ANY) — previously any member could
+      // rewrite or hard-delete to-dos created by anyone.
+      const membership = await this.groups.requireMember(todo.groupId, userId);
+      if (!can(membership.role, 'TODO_UPDATE_ANY')) {
+        const touchesContent =
+          dto.title !== undefined ||
+          dto.note !== undefined ||
+          dto.labels !== undefined ||
+          dto.dueAt !== undefined ||
+          dto.order !== undefined;
+        if (touchesContent) {
+          throw new ForbiddenException('Only the creator or an admin can edit this to-do');
+        }
+      }
+    }
 
     const updated = await this.prisma.todo.update({
       where: { id: todoId },
@@ -158,11 +179,19 @@ export class TodosService {
   }
 
   async reorder(userId: string, ids: string[]) {
-    // Authorize every id before mutating: a caller must own or be a member of
-    // the owning group of each to-do, otherwise foreign to-dos could be reordered.
+    // Reordering the shared list only sets `order`; it is allowed for members.
+    // Personal/foreign to-dos still require ownership so cross-user reorders are
+    // rejected.
     const todos = await this.prisma.todo.findMany({ where: { id: { in: ids } } });
     if (todos.length !== ids.length) throw new NotFoundException('To-do not found');
-    for (const todo of todos) await this.assertCanMutate(todo, userId);
+    for (const todo of todos) {
+      if (todo.ownerUserId === userId || todo.createdById === userId) continue;
+      if (todo.groupId) {
+        await this.groups.requireMember(todo.groupId, userId);
+      } else {
+        throw new NotFoundException('To-do not found');
+      }
+    }
     await Promise.all(
       ids.map((id, index) =>
         this.prisma.todo.updateMany({ where: { id }, data: { order: index } }),
@@ -174,17 +203,15 @@ export class TodosService {
   async remove(userId: string, todoId: string) {
     const todo = await this.prisma.todo.findUnique({ where: { id: todoId } });
     if (!todo) throw new NotFoundException('To-do not found');
-    await this.assertCanMutate(todo, userId);
+    await this.assertCanMutate(todo, userId, 'TODO_DELETE_ANY');
     await this.prisma.todo.delete({ where: { id: todoId } });
     return { ok: true };
   }
 
-  private async assertCanMutate(todo: any, userId: string): Promise<void> {
+  private async assertCanMutate(todo: any, userId: string, permission: Permission): Promise<void> {
     if (todo.ownerUserId === userId || todo.createdById === userId) return;
     if (todo.groupId) {
-      // Group to-do: the caller must be an active member of the owning group.
-      // requireMember throws NotFound when not a member.
-      await this.groups.requireMember(todo.groupId, userId);
+      await this.groups.requirePermission(todo.groupId, userId, permission);
       return;
     }
     throw new NotFoundException('To-do not found');

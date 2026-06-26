@@ -608,6 +608,10 @@ model Announcement {
 
 model DmThread {
   id        String   @id @default(uuid())
+  // Canonical sorted "userA|userB" key so a 1:1 thread is unique per pair at the
+  // DB level, preventing duplicate threads from concurrent create requests.
+  // Nullable only for back-compat with rows created before this constraint.
+  pairKey   String?  @unique
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

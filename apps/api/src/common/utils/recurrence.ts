@@ -109,7 +109,16 @@ export function expandRecurrence(
       } else if (rule.freq === 'MONTHLY') {
         const monthsDiff =
           (cursor.getUTCFullYear() - baseYear) * 12 + (cursor.getUTCMonth() - baseMonth);
-        matches = monthsDiff >= 0 && monthsDiff % rule.interval === 0 && cursor.getUTCDate() === baseDate;
+        // Clamp the base day-of-month to the target month's length so a monthly
+        // recurrence on the 29th/30th/31st still occurs in shorter months
+        // (e.g. the 31st lands on the 28th in February), instead of silently
+        // skipping those months.
+        const daysInMonth = new Date(
+          Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0),
+        ).getUTCDate();
+        const targetDay = Math.min(baseDate, daysInMonth);
+        matches =
+          monthsDiff >= 0 && monthsDiff % rule.interval === 0 && cursor.getUTCDate() === targetDay;
       }
     }
 

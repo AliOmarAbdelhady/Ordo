@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { GroupMember, GroupRole, GroupType, MemberStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { Permission, can } from '../common/permissions';
+import { Permission, can, roleRank } from '../common/permissions';
 import { redactBlock } from '../common/utils/visibility';
 import {
   GROUP_TEMPLATES,
@@ -181,28 +181,40 @@ export class GroupsService {
   }
 
   async joinByCode(userId: string, code: string) {
-    const invite = await this.prisma.groupInvite.findUnique({ where: { code } });
-    if (!invite) throw new NotFoundException('Invite not found');
-    if (invite.expiresAt && invite.expiresAt < new Date()) {
-      throw new NotFoundException('Invite has expired');
-    }
+    return this.prisma.$transaction(async (tx) => {
+      const invite = await tx.groupInvite.findUnique({ where: { code } });
+      if (!invite) throw new NotFoundException('Invite not found');
+      if (invite.expiresAt && invite.expiresAt < new Date()) {
+        throw new NotFoundException('Invite has expired');
+      }
+      // maxUses == 0 means unlimited; any positive value is a hard cap on total
+      // joins, enforced atomically here so a race cannot exceed it.
+      if (invite.maxUses > 0 && invite.uses >= invite.maxUses) {
+        throw new ForbiddenException('This invite is no longer available');
+      }
 
-    const existing = await this.prisma.groupMember.findFirst({
-      where: { groupId: invite.groupId, userId },
-    });
-    if (existing) {
-      if (existing.status === MemberStatus.ACTIVE) throw new ForbiddenException('Already a member');
-      await this.prisma.groupMember.update({ where: { id: existing.id }, data: { status: MemberStatus.ACTIVE } });
-    } else {
-      await this.prisma.groupMember.create({
-        data: { groupId: invite.groupId, userId, role: GroupRole.MEMBER, status: MemberStatus.ACTIVE },
+      const existing = await tx.groupMember.findFirst({
+        where: { groupId: invite.groupId, userId },
       });
-    }
-    await this.prisma.groupInvite.update({
-      where: { id: invite.id },
-      data: { uses: { increment: 1 } },
+      if (existing) {
+        if (existing.status === MemberStatus.ACTIVE) throw new ForbiddenException('Already a member');
+        // A user who was REMOVED by an admin cannot bypass that by reusing an
+        // invite. LEFT / INVITED members may rejoin.
+        if (existing.status === MemberStatus.REMOVED) {
+          throw new ForbiddenException('You were removed from this group and cannot rejoin via invite');
+        }
+        await tx.groupMember.update({ where: { id: existing.id }, data: { status: MemberStatus.ACTIVE } });
+      } else {
+        await tx.groupMember.create({
+          data: { groupId: invite.groupId, userId, role: GroupRole.MEMBER, status: MemberStatus.ACTIVE },
+        });
+      }
+      await tx.groupInvite.update({
+        where: { id: invite.id },
+        data: { uses: { increment: 1 } },
+      });
+      return { groupId: invite.groupId };
     });
-    return { groupId: invite.groupId };
   }
 
   async listMembers(userId: string, groupId: string) {
@@ -234,13 +246,19 @@ export class GroupsService {
   }
 
   async removeMember(userId: string, groupId: string, memberId: string) {
-    await this.requirePermission(groupId, userId, 'MEMBER_REMOVE');
+    const actor = await this.requirePermission(groupId, userId, 'MEMBER_REMOVE');
     const target = await this.prisma.groupMember.findFirst({ where: { id: memberId, groupId } });
     if (!target) throw new NotFoundException('Member not found');
     if (target.role === GroupRole.OWNER) throw new ForbiddenException('Cannot remove the owner');
 
     // If acting on self this is a "leave".
     if (target.userId === userId) return this.leave(userId, groupId);
+
+    // An admin/moderator can only remove members strictly below their own rank,
+    // not equals or superiors (e.g. an admin cannot remove another admin).
+    if (roleRank(target.role) >= roleRank(actor.role)) {
+      throw new ForbiddenException('You can only remove members below your rank');
+    }
 
     await this.prisma.groupMember.update({ where: { id: target.id }, data: { status: MemberStatus.REMOVED } });
     return { ok: true };

@@ -40,8 +40,14 @@ export class MediaController {
     @Res({ passthrough: false }) res: Response,
   ) {
     const { absPath, mimeType, filename } = await this.media.rawPath(userId, id);
+    const safeName = filename.replace(/"/g, '');
     res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Disposition', `inline; filename="${filename.replace(/"/g, '')}"`);
+    // Prevent MIME sniffing of user-uploaded content served from our origin.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    // Serve images inline; force download for everything else so a polyglot
+    // upload (e.g. HTML masquerading as an image) is not rendered in our origin.
+    const isImage = mimeType.startsWith('image/');
+    res.setHeader('Content-Disposition', `${isImage ? 'inline' : 'attachment'}; filename="${safeName}"`);
     res.sendFile(absPath);
   }
 

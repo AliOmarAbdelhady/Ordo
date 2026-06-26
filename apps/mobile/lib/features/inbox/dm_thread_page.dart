@@ -40,7 +40,17 @@ class _DmThreadPageState extends ConsumerState<DmThreadPage> {
     try {
       final res = await ref.read(apiClientProvider).dmMessages(widget.threadId);
       _messages = res.messages;
-      _title = res.messages.isNotEmpty ? res.messages.first.senderName : 'Direct message';
+      // Title = the OTHER participant, not the sender of the oldest message
+      // (which is often the user themselves). Fall back to a generic label.
+      final me = ref.read(authControllerProvider).valueOrNull?.id;
+      String? otherName;
+      for (final m in res.messages) {
+        if (m.senderId != me) {
+          otherName = m.senderName;
+          break;
+        }
+      }
+      _title = (otherName != null && otherName.isNotEmpty) ? otherName : 'Direct message';
       await ref.read(apiClientProvider).markDmRead(widget.threadId);
     } on ApiException catch (e) {
       if (mounted) toast(context, e.message, error: true);

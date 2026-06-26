@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -76,6 +77,29 @@ final dioProvider = Provider<Dio>((ref) {
     sendTimeout: const Duration(seconds: 20),
   ));
 
+  // Single-flight refresh: when many requests fail with 401 at once (very common
+  // on app foreground — timeline, tasks, groups, notifications all fire), they
+  // all share ONE refresh instead of each posting /auth/refresh. Refresh-token
+  // rotation means un-serialized concurrent refreshes would log the user out.
+  Future<bool>? refreshInFlight;
+
+  Future<bool> performRefresh() async {
+    final rt = tokens.refresh;
+    if (rt == null) return false;
+    try {
+      final res = await refreshDio.post('/api/auth/refresh', data: {'refreshToken': rt});
+      await tokens.save(res.data['accessToken'] as String, res.data['refreshToken'] as String);
+      // Notify the realtime layer so the socket reconnects with the fresh token.
+      ref.read(authRefreshProvider)?.call(tokens.access!);
+      return true;
+    } catch (_) {
+      await tokens.clear();
+      // Force the auth controller back to logged-out.
+      ref.read(authLogoutProvider)?.call();
+      return false;
+    }
+  }
+
   dio.interceptors.add(InterceptorsWrapper(
     onRequest: (options, handler) {
       final a = tokens.access;
@@ -87,18 +111,13 @@ final dioProvider = Provider<Dio>((ref) {
     onError: (e, handler) async {
       final status = e.response?.statusCode;
       final isAuthCall = e.requestOptions.path.startsWith('/api/auth/');
-      if (status == 401 && !isAuthCall && tokens.refresh != null) {
-        try {
-          final res = await refreshDio.post('/api/auth/refresh', data: {'refreshToken': tokens.refresh});
-          await tokens.save(res.data['accessToken'] as String, res.data['refreshToken'] as String);
+      if (status == 401 && !isAuthCall) {
+        final fut = refreshInFlight ??= performRefresh();
+        final ok = await fut;
+        refreshInFlight = null;
+        if (ok) {
           e.requestOptions.headers['Authorization'] = 'Bearer ${tokens.access}';
-          // Notify the realtime layer so the socket reconnects with the fresh token.
-          ref.read(authRefreshProvider)?.call(tokens.access!);
           return handler.resolve(await dio.fetch(e.requestOptions));
-        } catch (_) {
-          await tokens.clear();
-          // Force the auth controller back to logged-out.
-          ref.read(authLogoutProvider)?.call();
         }
       }
       handler.next(e);
@@ -272,9 +291,9 @@ class ApiClient {
           'dateRangeStart': start.toIso8601String(),
           'dateRangeEnd': end.toIso8601String(),
           'durationMinutes': durationMinutes,
-          if (required != null) 'requiredMemberIds': required,
-          if (minimum != null) 'minimumAvailableCount': minimum,
-          if (windows != null) 'preferredTimeWindows': windows,
+          'requiredMemberIds': ?required,
+          'minimumAvailableCount': ?minimum,
+          'preferredTimeWindows': ?windows,
         });
         final slots = ((r.data['slots'] as List)).map((e) => SlotResult.fromJson(e)).toList();
         final members = ((r.data['members'] as List)).map((e) => MemberRef.fromJson(e)).toList();
@@ -327,7 +346,7 @@ class ApiClient {
   // ── Todos ─────────────────────────────────────────────────────────────────
   Future<List<Todo>> todos(String? groupId, String tab) => _run(() async {
         final r = await dio.get('/api/todos', queryParameters: {
-          if (groupId != null) 'groupId': groupId,
+          'groupId': ?groupId,
           'tab': tab,
         });
         return ((r.data['todos'] as List)).map((e) => Todo.fromJson(e)).toList();
@@ -355,13 +374,13 @@ class ApiClient {
   Future<({List<ChatMessage> messages, bool hasMore})> messages(String groupId, {DateTime? before, int limit = 40}) =>
       _run(() async {
         final r = await dio.get('/api/groups/$groupId/messages',
-            queryParameters: {if (before != null) 'before': before.toIso8601String(), 'limit': limit});
+            queryParameters: {'before': ?before?.toIso8601String(), 'limit': limit});
         final list = ((r.data['messages'] as List)).map((e) => ChatMessage.fromJson(e)).toList();
         return (messages: list, hasMore: (r.data['hasMore'] as bool?) ?? false);
       });
 
   Future<ChatMessage> sendMessage(String groupId, String body, {String? replyToId}) => _run(() async {
-        final r = await dio.post('/api/groups/$groupId/messages', data: {'body': body, if (replyToId != null) 'replyToId': replyToId});
+        final r = await dio.post('/api/groups/$groupId/messages', data: {'body': body, 'replyToId': ?replyToId});
         return ChatMessage.fromJson(r.data);
       });
 
@@ -429,12 +448,25 @@ class ApiClient {
   // ── OTP ───────────────────────────────────────────────────────────────────
   Future<String> requestOtp(String target, String value, [String purpose = 'signup']) => _run(() async {
         final r = await dio.post('/api/auth/request-otp', data: {'target': target, 'value': value, 'purpose': purpose});
-        return (r.data['devCode'] as String?) ?? '';
+        // Only surface the dev OTP code in debug builds — in profile/release the
+        // backend omits it and we must not assume it is present.
+        return kDebugMode ? ((r.data['devCode'] as String?) ?? '') : '';
       });
 
   Future<bool> verifyOtp(String target, String value, String code, [String purpose = 'signup']) => _run(() async {
         final r = await dio.post('/api/auth/verify-otp', data: {'target': target, 'value': value, 'code': code, 'purpose': purpose});
         return r.data['verified'] == true;
+      });
+
+  /// Authenticated verification: validates the code AND marks the caller's
+  /// phone/email as verified server-side. Use this from the in-app verify flow;
+  /// the public verifyOtp only checks the code without persisting verification.
+  Future<bool> verifyContact(String target, String value, String code, [String? purpose]) =>
+      _run(() async {
+        final p = purpose ?? (target == 'phone' ? 'verify_phone' : 'verify_email');
+        final endpoint = target == 'phone' ? '/api/auth/verify-phone' : '/api/auth/verify-email';
+        await dio.post(endpoint, data: {'target': target, 'value': value, 'code': code, 'purpose': p});
+        return true;
       });
 
   // ── Search ────────────────────────────────────────────────────────────────
@@ -491,7 +523,7 @@ class ApiClient {
 
   Future<({List<DmMessage> messages, bool hasMore})> dmMessages(String threadId, {DateTime? before}) => _run(() async {
         final r = await dio.get('/api/inbox/threads/$threadId/messages',
-            queryParameters: {if (before != null) 'before': before.toIso8601String()});
+            queryParameters: {'before': ?before?.toIso8601String()});
         final list = ((r.data['messages'] as List)).map((e) => DmMessage.fromJson(e)).toList();
         return (messages: list, hasMore: (r.data['hasMore'] as bool?) ?? false);
       });
@@ -505,7 +537,7 @@ class ApiClient {
 
   // ── Media / Files ─────────────────────────────────────────────────────────
   Future<List<MediaFile>> media({String? groupId}) => _run(() async {
-        final r = await dio.get('/api/media', queryParameters: {if (groupId != null) 'groupId': groupId});
+        final r = await dio.get('/api/media', queryParameters: {'groupId': ?groupId});
         return ((r.data['files'] as List)).map((e) => MediaFile.fromJson(e)).toList();
       });
 
@@ -515,7 +547,7 @@ class ApiClient {
         final form = FormData.fromMap({
           'file': await MultipartFile.fromFile(path, filename: filename),
         });
-        final r = await dio.post('/api/media', data: form, queryParameters: {if (groupId != null) 'groupId': groupId});
+        final r = await dio.post('/api/media', data: form, queryParameters: {'groupId': ?groupId});
         return MediaFile.fromJson(r.data);
       });
 
@@ -539,7 +571,7 @@ class ApiClient {
 
   // ── Categories ────────────────────────────────────────────────────────────
   Future<List<Map<String, dynamic>>> categories({String? groupId}) => _run(() async {
-        final r = await dio.get('/api/timeline/categories', queryParameters: {if (groupId != null) 'groupId': groupId});
+        final r = await dio.get('/api/timeline/categories', queryParameters: {'groupId': ?groupId});
         return ((r.data['categories'] as List)).map((e) => e as Map<String, dynamic>).toList();
       });
 
@@ -551,12 +583,12 @@ class ApiClient {
 
   // ── AI ────────────────────────────────────────────────────────────────────
   Future<AiSuggestion> aiParse(String text, {String? groupId}) => _run(() async {
-        final r = await dio.post('/api/ai/parse-command', data: {'text': text, if (groupId != null) 'groupId': groupId});
+        final r = await dio.post('/api/ai/parse-command', data: {'text': text, 'groupId': ?groupId});
         return AiSuggestion(r.data['suggestion'] as Map<String, dynamic>);
       });
 
   Future<List<AiSuggestion>> aiExtractTasks(List<String> messages, {String? groupId}) => _run(() async {
-        final r = await dio.post('/api/ai/extract-tasks', data: {'messages': messages, if (groupId != null) 'groupId': groupId});
+        final r = await dio.post('/api/ai/extract-tasks', data: {'messages': messages, 'groupId': ?groupId});
         return ((r.data['suggestions'] as List)).map((e) => AiSuggestion(e as Map<String, dynamic>)).toList();
       });
 
@@ -571,7 +603,7 @@ class ApiClient {
       });
 
   Future<Map<String, dynamic>> aiApply(Map<String, dynamic> suggestion, {String? groupId}) => _run(() async {
-        final r = await dio.post('/api/ai/apply-suggestion', data: {'suggestion': suggestion, if (groupId != null) 'groupId': groupId});
+        final r = await dio.post('/api/ai/apply-suggestion', data: {'suggestion': suggestion, 'groupId': ?groupId});
         return r.data;
       });
 }

@@ -135,17 +135,19 @@ export class TimelineService {
 
   async update(userId: string, blockId: string, dto: UpdateBlockDto): Promise<any> {
     const block = await this.assertWritable(userId, blockId);
-    const start = dto.startTime ? new Date(dto.startTime) : undefined;
-    const end = dto.endTime ? new Date(dto.endTime) : undefined;
-    if (start && end && !(start < end)) throw new BadRequestException('Start must be before end');
+    // Validate the EFFECTIVE window by falling back to the persisted values, so
+    // a partial PATCH that only changes one bound cannot break start<end.
+    const start = dto.startTime ? new Date(dto.startTime) : block.startTime;
+    const end = dto.endTime ? new Date(dto.endTime) : block.endTime;
+    if (!(start < end)) throw new BadRequestException('Start must be before end');
 
     const updated = await this.prisma.timelineBlock.update({
       where: { id: blockId },
       data: {
         title: dto.title,
         description: dto.description,
-        startTime: start,
-        endTime: end,
+        startTime: dto.startTime ? new Date(dto.startTime) : undefined,
+        endTime: dto.endTime ? new Date(dto.endTime) : undefined,
         allDay: dto.allDay,
         visibility: dto.visibility,
         flexibility: dto.flexibility,
@@ -175,23 +177,43 @@ export class TimelineService {
   async getOne(userId: string, blockId: string) {
     const block = await this.prisma.timelineBlock.findUnique({ where: { id: blockId } });
     if (!block || block.deletedAt) throw new NotFoundException('Block not found');
-    // Access: owner, creator, or (group block / synced) visible to a member.
     const isOwner = block.ownerUserId === userId || block.createdById === userId;
+    let effective: Visibility | undefined;
+
     if (!isOwner) {
       if (block.groupId) {
+        // Group block: visible to members; the block's own visibility governs.
         await this.groups.requireMember(block.groupId, userId);
       } else {
-        // Self block of someone else → only via sync. Check syncs in shared groups.
-        const shared = await this.prisma.timelineBlockSync.findFirst({
+        // Self block of someone else → reachable only via a sync into a group the
+        // viewer belongs to. Collect the viewer's eligible syncs and use the most
+        // permissive one as the effective visibility (previously the sync's
+        // visibility was ignored, leaking full details of shared PRIVATE blocks).
+        const syncs = await this.prisma.timelineBlockSync.findMany({
           where: { timelineBlockId: blockId },
         });
-        if (shared) await this.groups.requireMember(shared.groupId, userId);
-        else throw new NotFoundException('Block not found');
+        const viewerVisibilities: Visibility[] = [];
+        for (const s of syncs) {
+          if (await this.groups.isMember(s.groupId, userId)) viewerVisibilities.push(s.visibility);
+        }
+        if (!viewerVisibilities.length) throw new NotFoundException('Block not found');
+        effective = this.mostPermissive(viewerVisibilities);
       }
     }
-    const view = redactBlock(this.toRaw(block), userId);
+
+    const view = redactBlock(this.toRaw(block, undefined, undefined, effective), userId);
     if (!view) throw new NotFoundException('Block not found');
     return view;
+  }
+
+  private mostPermissive(visibilities: Visibility[]): Visibility {
+    const rank: Record<Visibility, number> = {
+      PRIVATE: 0,
+      BUSY_ONLY: 1,
+      TITLE_ONLY: 2,
+      FULL: 3,
+    };
+    return visibilities.reduce((best, v) => (rank[v] > rank[best] ? v : best), Visibility.PRIVATE);
   }
 
   // ── Sync (the privacy feature: share a self block with groups) ────────────

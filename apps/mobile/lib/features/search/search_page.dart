@@ -141,7 +141,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     return ListView.separated(
       padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg, vertical: OrdoSpacing.sm),
       itemCount: hits.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (_, i) {
         final h = hits[i];
         return OCard(

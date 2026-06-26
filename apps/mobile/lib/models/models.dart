@@ -1,6 +1,14 @@
 import 'package:flutter/material.dart';
 
-DateTime _dt(dynamic v) => v is String ? DateTime.parse(v) : (v as DateTime);
+DateTime _dt(dynamic v) {
+  // Tolerant parse: a single malformed timestamp from the server must not abort
+  // the whole list parse. Falls back to epoch so the record is still rendered.
+  try {
+    if (v is DateTime) return v;
+    if (v is String) return DateTime.parse(v);
+  } catch (_) {}
+  return DateTime.fromMillisecondsSinceEpoch(0);
+}
 
 class User {
   final String id;
@@ -800,8 +808,20 @@ class AiSuggestion {
   String? get dueDate => raw['dueDate'];
 }
 
-Color _color(String hex) {
-  var h = hex.replaceAll('#', '');
-  if (h.length == 6) h = 'FF$h';
-  return Color(int.parse(h, radix: 16));
+const Color _defaultColor = Color(0xFF2563EB);
+
+Color _color(String? hex) {
+  if (hex == null) return _defaultColor;
+  var h = hex.trim();
+  h = h.replaceAll('#', '');
+  if (h.startsWith('0x') || h.startsWith('0X')) h = h.substring(2);
+  // Expand shorthand #RGB → #RRGGBB.
+  if (h.length == 3) h = h.split('').map((c) => c * 2).join('');
+  if (h.length == 6) h = 'FF$h'; // add full opacity
+  if (h.length != 8) return _defaultColor;
+  try {
+    return Color(int.parse(h, radix: 16));
+  } catch (_) {
+    return _defaultColor;
+  }
 }

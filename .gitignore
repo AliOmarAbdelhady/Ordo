@@ -8,6 +8,10 @@ out/
 build/
 dist/
 
+# TypeScript incremental build cache (stale copies make `nest build` silently
+# no-op; never commit these)
+*.tsbuildinfo
+
 # env
 .env
 .env.local

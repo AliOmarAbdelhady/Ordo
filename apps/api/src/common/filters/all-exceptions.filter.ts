@@ -53,9 +53,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       } else {
         code = exception.code;
       }
-    } else if (exception instanceof Error) {
-      message = exception.message;
     }
+    // NOTE: we intentionally do NOT forward raw Error.message for unhandled
+    // (non-HttpException) errors — those would leak internal details (stack-derived
+    // messages, library errors, assertion text) to clients. The default
+    // "Internal server error" is returned instead; the real error is logged below.
 
     if (status >= 500) {
       this.logger.error(

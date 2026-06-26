@@ -1,5 +1,8 @@
 import {
+  BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   Logger,
@@ -11,6 +14,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { compare, genSalt, hash } from 'bcryptjs';
+import { randomInt } from 'crypto';
 import { User } from '@prisma/client';
 
 export interface AuthTokens {
@@ -49,6 +53,10 @@ export function toPublicUser(user: User): PublicUser {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  // In-memory OTP rate limiter (key -> {count, resetAt}). Fine for a single
+  // instance MVP; swap for Redis when scaling out. Bounds OTP issuance/verify
+  // brute-force and per-target flooding.
+  private readonly otpLimits = new Map<string, { count: number; resetAt: number }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -57,9 +65,26 @@ export class AuthService {
     @Inject('BCRYPT_ROUNDS') private readonly rounds: number,
   ) {}
 
+  private enforceRateLimit(key: string, max: number, windowMs: number) {
+    const now = Date.now();
+    const entry = this.otpLimits.get(key);
+    if (!entry || entry.resetAt < now) {
+      this.otpLimits.set(key, { count: 1, resetAt: now + windowMs });
+      return;
+    }
+    entry.count += 1;
+    if (entry.count > max) {
+      throw new HttpException('Too many attempts, please try again later', HttpStatus.TOO_MANY_REQUESTS);
+    }
+  }
+
   async register(dto: RegisterDto, meta: { userAgent?: string; ip?: string }) {
+    // Emails are case-insensitive: normalize to lowercase everywhere so that
+    // Foo@x.com and foo@x.com cannot register as two accounts and so login
+    // always matches regardless of casing. (DB @unique is case-sensitive.)
+    const email = dto.email.toLowerCase().trim();
     const exists = await this.prisma.user.findFirst({
-      where: { OR: [{ email: dto.email }, { username: dto.username }] },
+      where: { OR: [{ email }, { username: dto.username }] },
       select: { id: true },
     });
     if (exists) throw new ConflictException('Email or username already in use');
@@ -68,7 +93,7 @@ export class AuthService {
     const user = await this.prisma.user.create({
       data: {
         name: dto.name,
-        email: dto.email,
+        email,
         username: dto.username,
         passwordHash,
         emailVerified: false,
@@ -81,8 +106,11 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, meta: { userAgent?: string; ip?: string }) {
+    // Accept either an email or a username. Normalize so email casing and
+    // surrounding whitespace never cause a mismatch against the stored row.
+    const identifier = dto.email.toLowerCase().trim();
     const user = await this.prisma.user.findFirst({
-      where: { OR: [{ email: dto.email }, { username: dto.email }] },
+      where: { OR: [{ email: identifier }, { username: dto.email.trim() }] },
     });
     if (!user || user.deletedAt) throw new UnauthorizedException('Invalid credentials');
 
@@ -165,44 +193,46 @@ export class AuthService {
   }
 
   private async issueSession(user: User, meta: { userAgent?: string; ip?: string }): Promise<AuthTokens> {
-    const refreshTtl = this.parseTtl(this.config.get<string>('JWT_REFRESH_TTL') ?? '60d');
-    const expiresAt = new Date(Date.now() + refreshTtl);
+    const refreshTtlStr = this.config.get<string>('JWT_REFRESH_TTL') ?? '60d';
+    const refreshTtlMs = this.parseTtl(refreshTtlStr);
+    const expiresAt = new Date(Date.now() + refreshTtlMs);
+    const accessTtlStr = this.config.get<string>('JWT_ACCESS_TTL') ?? '15m';
 
-    const access = await this.jwt.signAsync(
-      { sub: user.id, email: user.email, name: user.name },
-      {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.config.get<string>('JWT_ACCESS_TTL') ?? '15m',
-      },
-    );
-
-    const refresh = await this.jwt.signAsync(
-      { sub: user.id, sid: '' },
-      { secret: this.config.get<string>('JWT_REFRESH_SECRET'), expiresIn: '60d' },
-    );
-
-    // We need the session id inside the refresh token, so create the session
-    // first with a placeholder, then re-sign with the real sid.
+    // Create the session row first so its id can be embedded in BOTH tokens.
+    // The refresh token's sid is verified on refresh; the access token's sid tags
+    // the issuing session. Access-token revocation relies on the short access TTL
+    // plus session revocation on logout/reuse — NOT a per-request session lookup
+    // (which would cascade 401s across refresh rotation). Deleted accounts are
+    // rejected immediately via the JwtStrategy deletedAt check.
     const session = await this.prisma.session.create({
       data: {
         userId: user.id,
-        refreshTokenHash: await hash(refresh, await genSalt(this.rounds)),
+        refreshTokenHash: 'pending', // overwritten below once the real token is signed
         userAgent: meta.userAgent,
         ip: meta.ip,
         expiresAt,
       },
     });
 
-    const finalRefresh = await this.jwt.signAsync(
-      { sub: user.id, sid: session.id },
-      { secret: this.config.get<string>('JWT_REFRESH_SECRET'), expiresIn: '60d' },
+    const access = await this.jwt.signAsync(
+      { sub: user.id, email: user.email, name: user.name, sid: session.id },
+      {
+        secret: this.config.get<string>('JWT_ACCESS_SECRET'),
+        expiresIn: accessTtlStr,
+      },
     );
+
+    const refresh = await this.jwt.signAsync(
+      { sub: user.id, sid: session.id },
+      { secret: this.config.get<string>('JWT_REFRESH_SECRET'), expiresIn: refreshTtlStr },
+    );
+
     await this.prisma.session.update({
       where: { id: session.id },
-      data: { refreshTokenHash: await hash(finalRefresh, await genSalt(this.rounds)) },
+      data: { refreshTokenHash: await hash(refresh, await genSalt(this.rounds)) },
     });
 
-    return { accessToken: access, refreshToken: finalRefresh };
+    return { accessToken: access, refreshToken: refresh };
   }
 
   private parseTtl(ttl: string): number {
@@ -220,52 +250,111 @@ export class AuthService {
   // production this would be delivered out-of-band and `devCode` omitted.
   async requestOtp(dto: { target: 'phone' | 'email'; value: string; purpose?: string }) {
     const purpose = dto.purpose ?? 'signup';
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const value = dto.value.toLowerCase().trim();
+
+    // Bound OTP issuance per target+purpose (and globally per value) to prevent
+    // flooding / cost amplification once a real SMS/email provider is wired up.
+    this.enforceRateLimit(`otp:req:${dto.target}:${value}:${purpose}`, 5, 10 * 60 * 1000);
+    this.enforceRateLimit(`otp:req:${value}`, 10, 10 * 60 * 1000);
+
+    // Cryptographically secure 6-digit code (Math.random is not CSPRNG).
+    const code = String(randomInt(100000, 1000000));
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
     await this.prisma.verificationCode.create({
       data: {
         target: dto.target,
-        value: dto.value.toLowerCase().trim(),
+        value,
         codeHash: await hash(code, await genSalt(this.rounds)),
         purpose,
         expiresAt,
       },
     });
-    return { sent: true, purpose, expiresAt: expiresAt.toISOString(), devCode: code };
+    // devCode is for local development ONLY — it must never leak in production,
+    // or any caller could read the verification code for an arbitrary target
+    // from the HTTP response and bypass every OTP-protected flow.
+    const isDev = this.config.get<string>('NODE_ENV') !== 'production';
+    return {
+      sent: true,
+      purpose,
+      expiresAt: expiresAt.toISOString(),
+      ...(isDev ? { devCode: code } : {}),
+    };
   }
 
   async verifyOtp(dto: { target: 'phone' | 'email'; value: string; code: string; purpose?: string }) {
     const value = dto.value.toLowerCase().trim();
     const purpose = dto.purpose ?? 'signup';
-    const record = await this.prisma.verificationCode.findFirst({
-      where: { value, target: dto.target, purpose, consumedAt: null },
+
+    // Throttle brute-force attempts per target+purpose across all codes.
+    this.enforceRateLimit(`otp:ver:${dto.target}:${value}:${purpose}`, 20, 10 * 60 * 1000);
+
+    const now = new Date();
+    // Consider ALL unconsumed, non-expired candidates — a user may have
+    // requested several codes and any of them should verify, not only the
+    // newest (the previous newest-only logic made older valid codes unusable).
+    const candidates = await this.prisma.verificationCode.findMany({
+      where: { value, target: dto.target, purpose, consumedAt: null, expiresAt: { gt: now } },
       orderBy: { createdAt: 'desc' },
     });
-    if (!record) throw new UnauthorizedException('No code requested');
-    if (record.expiresAt < new Date()) throw new UnauthorizedException('Code expired');
-    if (record.attempts >= 5) throw new UnauthorizedException('Too many attempts');
 
-    const ok = await compare(dto.code, record.codeHash);
-    if (!ok) {
-      await this.prisma.verificationCode.update({
-        where: { id: record.id },
-        data: { attempts: { increment: 1 } },
-      });
-      throw new UnauthorizedException('Invalid code');
+    let matched: (typeof candidates)[number] | null = null;
+    for (const c of candidates) {
+      if (c.attempts >= 5) continue;
+      if (await compare(dto.code, c.codeHash)) {
+        matched = c;
+        break;
+      }
     }
-    await this.prisma.verificationCode.update({
-      where: { id: record.id },
-      data: { consumedAt: new Date() },
+
+    if (!matched) {
+      // Burn an attempt on the newest still-eligible candidate so repeated
+      // guessing locks the code out instead of retrying forever.
+      const newest = candidates.find((c) => c.attempts < 5);
+      if (newest) {
+        await this.prisma.verificationCode.update({
+          where: { id: newest.id },
+          data: { attempts: { increment: 1 } },
+        });
+      }
+      throw new UnauthorizedException(candidates.length ? 'Invalid code' : 'No code requested');
+    }
+
+    // Atomic consumption: only marks used if still unconsumed, preventing
+    // double-use under concurrent verify requests.
+    const consumed = await this.prisma.verificationCode.updateMany({
+      where: { id: matched.id, consumedAt: null },
+      data: { consumedAt: now },
     });
+    if (consumed.count === 0) throw new UnauthorizedException('Code already used');
+
     return { verified: true, target: dto.target, value };
   }
 
   /** Mark the caller's phone/email as verified after a successful OTP. */
   async markVerified(userId: string, target: 'phone' | 'email', value: string) {
-    const data = target === 'phone'
-      ? { phoneVerified: true, phone: value }
-      : { emailVerified: true };
-    const user = await this.prisma.user.update({ where: { id: userId }, data });
-    return toPublicUser(user);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (target === 'email') {
+      // The verified value must be the caller's own account email — otherwise a
+      // user could "verify" an arbitrary address they only proved receipt of.
+      if (user.email.toLowerCase() !== value.toLowerCase().trim()) {
+        throw new BadRequestException('Email does not match your account');
+      }
+      const updated = await this.prisma.user.update({
+        where: { id: userId },
+        data: { emailVerified: true },
+      });
+      return toPublicUser(updated);
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { phoneVerified: true, phone: value.trim() },
+    });
+    return toPublicUser(updated);
   }
 }

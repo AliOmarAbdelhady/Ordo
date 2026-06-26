@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MemberStatus, NotificationType } from '@prisma/client';
+import { MemberStatus, NotificationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -34,15 +34,11 @@ export class InboxService {
 
   async findOrCreateThread(userId: string, dto: CreateThreadDto) {
     await this.assertShareGroup(userId, dto.otherUserId);
+    // Canonical pair key makes a 1:1 thread unique per user pair, so concurrent
+    // create requests cannot spawn duplicate threads.
+    const pairKey = [userId, dto.otherUserId].sort().join('|');
 
-    const existing = await this.prisma.dmThread.findFirst({
-      where: {
-        AND: [
-          { members: { some: { userId } } },
-          { members: { some: { userId: dto.otherUserId } } },
-        ],
-      },
-    });
+    const existing = await this.prisma.dmThread.findFirst({ where: { pairKey } });
     if (existing) {
       // Un-hide for the user if they had previously hidden it.
       await this.prisma.dmMember.updateMany({
@@ -52,12 +48,22 @@ export class InboxService {
       return { threadId: existing.id };
     }
 
-    const thread = await this.prisma.dmThread.create({
-      data: {
-        members: { create: [{ userId }, { userId: dto.otherUserId }] },
-      },
-    });
-    return { threadId: thread.id };
+    try {
+      const thread = await this.prisma.dmThread.create({
+        data: {
+          pairKey,
+          members: { create: [{ userId }, { userId: dto.otherUserId }] },
+        },
+      });
+      return { threadId: thread.id };
+    } catch (e) {
+      // Race: another concurrent request created the thread for this pair first.
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        const raced = await this.prisma.dmThread.findFirst({ where: { pairKey } });
+        if (raced) return { threadId: raced.id };
+      }
+      throw e;
+    }
   }
 
   async listThreads(userId: string) {
@@ -74,17 +80,31 @@ export class InboxService {
       orderBy: { thread: { updatedAt: 'desc' } },
     });
 
-    const threads = memberships.map((m) => {
+    // Real unread count per thread: messages from the other user after the
+    // caller's lastReadAt (or all of them if never read). The previous logic only
+    // ever returned 0 or 1 regardless of how many messages were unread.
+    const unreadCounts = await Promise.all(
+      memberships.map((m) =>
+        this.prisma.dmMessage.count({
+          where: {
+            threadId: m.thread.id,
+            senderId: { not: userId },
+            createdAt: { gt: m.lastReadAt ?? new Date(0) },
+          },
+        }),
+      ),
+    );
+
+    const threads = memberships.map((m, i) => {
       const other = m.thread.members.find((x) => x.userId !== userId)?.user ?? null;
       const last = m.thread.messages[0];
-      const unreadCount = last && (!m.lastReadAt || last.createdAt > m.lastReadAt) ? 1 : 0;
       return {
         id: m.thread.id,
         other,
         lastMessage: last
           ? { id: last.id, body: last.body, senderId: last.senderId, createdAt: last.createdAt.toISOString() }
           : null,
-        unreadCount,
+        unreadCount: unreadCounts[i] ?? 0,
         lastReadAt: m.lastReadAt ? m.lastReadAt.toISOString() : null,
       };
     });
@@ -158,7 +178,12 @@ export class InboxService {
   }
 
   private async assertInThread(userId: string, threadId: string) {
-    const member = await this.prisma.dmMember.findFirst({ where: { threadId, userId } });
+    // A hidden membership is treated as "not in thread": a user who hid the
+    // conversation cannot read, send, or mark-read until it is un-hidden (which
+    // happens on find-or-create or when the other party sends a new message).
+    const member = await this.prisma.dmMember.findFirst({
+      where: { threadId, userId, hiddenAt: null },
+    });
     if (!member) throw new NotFoundException('Conversation not found');
     return member;
   }

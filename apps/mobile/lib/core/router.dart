@@ -47,43 +47,43 @@ final routerProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
-      GoRoute(path: '/login', builder: (_, __) => const LoginPage()),
-      GoRoute(path: '/register', builder: (_, __) => const RegisterPage()),
+      GoRoute(path: '/login', builder: (_, _) => const LoginPage()),
+      GoRoute(path: '/register', builder: (_, _) => const RegisterPage()),
 
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) => AppShell(navigationShell: navigationShell),
         branches: [
           StatefulShellBranch(routes: [
-            GoRoute(path: '/today', builder: (_, __) => const TodayPage()),
+            GoRoute(path: '/today', builder: (_, _) => const TodayPage()),
           ]),
           StatefulShellBranch(routes: [
             GoRoute(
               path: '/groups',
-              builder: (_, __) => const GroupsPage(),
+              builder: (_, _) => const GroupsPage(),
               routes: [
-                GoRoute(path: 'create', builder: (_, __) => const CreateGroupPage()),
+                GoRoute(path: 'create', builder: (_, _) => const CreateGroupPage()),
               ],
             ),
           ]),
           StatefulShellBranch(routes: [
             GoRoute(
               path: '/timeline',
-              builder: (_, __) => const TimelinePage(),
+              builder: (_, _) => const TimelinePage(),
               routes: [
-                GoRoute(path: 'todos', builder: (_, __) => const TodosPage()),
+                GoRoute(path: 'todos', builder: (_, _) => const TodosPage()),
               ],
             ),
           ]),
           StatefulShellBranch(routes: [
-            GoRoute(path: '/inbox', builder: (_, __) => const InboxPage()),
+            GoRoute(path: '/inbox', builder: (_, _) => const InboxPage()),
           ]),
           StatefulShellBranch(routes: [
             GoRoute(
               path: '/profile',
-              builder: (_, __) => const ProfilePage(),
+              builder: (_, _) => const ProfilePage(),
               routes: [
-                GoRoute(path: 'settings', builder: (_, __) => const SettingsPage()),
-                GoRoute(path: 'edit', builder: (_, __) => const EditProfilePage()),
+                GoRoute(path: 'settings', builder: (_, _) => const SettingsPage()),
+                GoRoute(path: 'edit', builder: (_, _) => const EditProfilePage()),
               ],
             ),
           ]),
@@ -103,9 +103,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         return FindSlotPage(groupId: groupId);
       }),
       GoRoute(path: '/tasks/:id', builder: (_, s) => TaskDetailPage(taskId: s.pathParameters['id']!)),
-      GoRoute(path: '/search', builder: (_, __) => const SearchPage()),
+      GoRoute(path: '/search', builder: (_, _) => const SearchPage()),
       GoRoute(path: '/assistant', builder: (_, s) => AiAssistantPage(groupId: s.uri.queryParameters['groupId'])),
-      GoRoute(path: '/inbox/new-dm', builder: (_, __) => const NewDmPage()),
+      GoRoute(path: '/inbox/new-dm', builder: (_, _) => const NewDmPage()),
       GoRoute(path: '/inbox/dm/:id', builder: (_, s) => DmThreadPage(threadId: s.pathParameters['id']!)),
       GoRoute(path: '/otp', builder: (_, s) => OtpPage(
         target: s.uri.queryParameters['target'] ?? 'email',

@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsInt, IsOptional, IsString, MaxLength, MinLength, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsInt, IsOptional, IsString, MaxLength, MinLength, ValidateNested } from 'class-validator';
 
 export class PollOptionDto {
   @IsString()
@@ -16,6 +16,7 @@ export class CreatePollDto {
 
   @IsArray()
   @ArrayMinSize(2)
+  @ArrayMaxSize(20)
   @ArrayUnique((o: PollOptionDto) => o.text)
   @ValidateNested({ each: true })
   @Type(() => PollOptionDto)

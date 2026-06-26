@@ -39,6 +39,11 @@ export function tallyPoll(
   }
   const voters = new Set(votes.map((v) => v.userId));
   const totalVoters = voters.size;
+  // Denominator is the total number of ballots cast (vote rows). For
+  // single-choice polls this equals the voter count; for multi-choice polls it
+  // is the sum of all selections, so per-option percentages represent a true
+  // share of all ballots and the bars sum to ~100%.
+  const totalVotes = votes.length;
 
   const results: OptionResult[] = options.map((opt) => {
     const count = counts.get(opt.id)?.size ?? 0;
@@ -46,7 +51,7 @@ export function tallyPoll(
       id: opt.id,
       text: opt.text,
       count,
-      percent: totalVoters === 0 ? 0 : Number(((count / totalVoters) * 100).toFixed(1)),
+      percent: totalVotes === 0 ? 0 : Number(((count / totalVotes) * 100).toFixed(1)),
     };
   });
 
@@ -56,7 +61,7 @@ export function tallyPoll(
 
   return {
     options: results,
-    totalVotes: votes.length,
+    totalVotes,
     totalVoters,
     viewerVotes,
     viewerHasVoted: viewerVotes.length > 0,

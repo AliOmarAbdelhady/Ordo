@@ -34,7 +34,7 @@ describe('tallyPoll', () => {
     expect(tally.viewerVotes).toEqual(['c']);
   });
 
-  it('handles multiple votes from the same voter', () => {
+  it('handles multiple votes from the same voter (share of all ballots)', () => {
     const tally = tallyPoll(
       opts,
       [
@@ -43,9 +43,13 @@ describe('tallyPoll', () => {
       ],
       'u1',
     );
-    // 1 unique voter → each option is 100%
+    // 1 unique voter but 2 ballots cast. Per-option percent is a share of total
+    // ballots (sum of selections), so the bars sum to ~100% instead of each
+    // showing 100% — the correct semantics for multi-choice polls.
     expect(tally.totalVoters).toBe(1);
-    expect(tally.options.find((o) => o.id === 'a')!.percent).toBe(100);
+    expect(tally.totalVotes).toBe(2);
+    expect(tally.options.find((o) => o.id === 'a')!.percent).toBe(50);
+    expect(tally.options.find((o) => o.id === 'b')!.percent).toBe(50);
   });
 
   it('returns zero percent when nobody has voted', () => {

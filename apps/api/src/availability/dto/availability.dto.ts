@@ -10,6 +10,16 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+export class GroupAvailabilityStripDto {
+  @IsDateString()
+  @IsOptional()
+  from?: string;
+
+  @IsDateString()
+  @IsOptional()
+  to?: string;
+}
+
 export class FindSlotsDto {
   @IsString()
   groupId!: string;

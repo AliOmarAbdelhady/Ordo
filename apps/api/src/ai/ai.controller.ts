@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { AiService } from './ai.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { ApplySuggestionDto, ExtractTasksDto, ParseCommandDto } from './dto/ai.dto';
+import { ApplySuggestionDto, ExtractTasksDto, ParseCommandDto, SummarizeGroupDto } from './dto/ai.dto';
 
 @Controller('ai')
 export class AiController {
@@ -18,8 +18,8 @@ export class AiController {
   }
 
   @Post('summarize-group')
-  summarize(@CurrentUser('id') userId: string, @Body() body: { groupId: string }) {
-    return this.ai.summarizeGroup(userId, body.groupId);
+  summarize(@CurrentUser('id') userId: string, @Body() dto: SummarizeGroupDto) {
+    return this.ai.summarizeGroup(userId, dto.groupId);
   }
 
   @Get('plan-day')

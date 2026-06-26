@@ -22,7 +22,11 @@ export class RegisterDto {
 }
 
 export class LoginDto {
-  @IsEmail()
+  // Accepts either an email or a username — the service matches both. Using
+  // @IsEmail here previously rejected usernames, making username login dead code.
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
   email!: string;
 
   @IsString()

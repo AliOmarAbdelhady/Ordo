@@ -31,7 +31,7 @@ export class AvailabilityService {
 
     const memberAvailability: MemberAvailability[] = [];
     for (const m of members) {
-      const intervals = await this.memberBusy(m.userId, from, cappedTo);
+      const intervals = await this.memberBusyFull(m.userId, from, cappedTo);
       const prefs = await this.prisma.availabilityPreferences.findUnique({ where: { userId: m.userId } });
       memberAvailability.push({
         memberId: m.userId,
@@ -74,7 +74,7 @@ export class AvailabilityService {
 
     const out = await Promise.all(
       members.map(async (m) => {
-        const intervals = await this.memberBusy(m.userId, from, to);
+        const intervals = await this.memberBusyForGroup(m.userId, groupId, from, to);
         return {
           id: m.userId,
           name: m.user.name,
@@ -86,8 +86,14 @@ export class AvailabilityService {
     return { members: out };
   }
 
-  /** All busy intervals for a user across their self + group calendars. */
-  private async memberBusy(userId: string, from: Date, to: Date): Promise<Interval[]> {
+  /**
+   * A member's REAL busy intervals across their whole calendar (self blocks +
+   * every group they are in + synced blocks). Used by findSlots, which consumes
+   * these SERVER-SIDE to compute free slots — the busy intervals themselves are
+   * never returned to the requester, so no cross-group timing is leaked. This
+   * must stay complete or findSlots would suggest times when members are busy.
+   */
+  private async memberBusyFull(userId: string, from: Date, to: Date): Promise<Interval[]> {
     const groupIds = (
       await this.prisma.groupMember.findMany({
         where: { userId, status: MemberStatus.ACTIVE },
@@ -107,17 +113,51 @@ export class AvailabilityService {
         ? this.prisma.timelineBlock.findMany({ where: { groupId: { in: groupIds }, ...window } })
         : Promise.resolve([]),
       groupIds.length
-        ? this.prisma.timelineBlockSync.findMany({
-            where: { groupId: { in: groupIds } },
-            include: { block: true },
-          })
+        ? this.prisma.timelineBlockSync.findMany({ where: { groupId: { in: groupIds }, block: window }, include: { block: true } })
         : Promise.resolve([]),
     ]);
 
     const sources = [
       ...selfBlocks,
       ...groupBlocks,
-      ...syncs.filter((s) => s.block && !s.block.deletedAt).map((s) => s.block),
+      ...syncs.filter((s) => s.block && !s.block.deletedAt && s.block.ownerUserId === userId).map((s) => s.block),
+    ];
+
+    const intervals: Interval[] = [];
+    for (const b of sources) intervals.push(...expandRecurrence(b as any, from, to));
+    return this.mergeIntervals(intervals);
+  }
+
+  /**
+   * Privacy-safe busy intervals for a member WITHIN a specific group context, for
+   * the "Members" availability STRIP (which DISPLAYS busy intervals to viewers).
+   * Returns only: (a) that group's blocks (they block every member) and (b) the
+   * member's own self-blocks explicitly synced into this group. It deliberately
+   * omits the member's private self-blocks and other-group blocks so a viewer in
+   * one group cannot see the timing of commitments from groups they don't share.
+   * Timing-only intervals are the intended BUSY_ONLY representation (no titles).
+   */
+  private async memberBusyForGroup(userId: string, groupId: string, from: Date, to: Date): Promise<Interval[]> {
+    const window = {
+      deletedAt: null,
+      startTime: { lte: new Date(to.getTime() + DAY) },
+      OR: [{ recurrenceRule: { not: null } }, { endTime: { gte: new Date(from.getTime() - DAY) } }],
+    };
+
+    const [groupBlocks, syncs] = await Promise.all([
+      this.prisma.timelineBlock.findMany({ where: { groupId, ...window } }),
+      this.prisma.timelineBlockSync.findMany({
+        where: { groupId, block: window },
+        include: { block: true },
+      }),
+    ]);
+
+    const sources = [
+      ...groupBlocks,
+      // Only this member's synced self-blocks make THEM busy.
+      ...syncs
+        .filter((s) => s.block && !s.block.deletedAt && s.block.ownerUserId === userId)
+        .map((s) => s.block),
     ];
 
     const intervals: Interval[] = [];

@@ -1,4 +1,6 @@
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, Matches, MaxLength, MinLength } from 'class-validator';
+
+const HEX_COLOR = /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/;
 
 export class CreateCategoryDto {
   @IsString()
@@ -8,9 +10,10 @@ export class CreateCategoryDto {
 
   @IsString()
   @IsOptional()
+  @Matches(HEX_COLOR, { message: 'color must be a hex color like #2563EB' })
   color?: string;
 
-  @IsString()
+  @IsUUID()
   @IsOptional()
   groupId?: string;
 }

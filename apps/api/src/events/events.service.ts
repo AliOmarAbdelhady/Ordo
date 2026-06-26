@@ -15,7 +15,11 @@ export class EventsService {
   /** RSVPs are only meaningful for group events; the viewer must be a member. */
   private async assertGroupEvent(userId: string, blockId: string) {
     const block = await this.prisma.timelineBlock.findUnique({ where: { id: blockId } });
-    if (!block || block.deletedAt || !block.groupId) throw new NotFoundException('Event not found');
+    // Only blocks explicitly created as events are RSVP-able — previously any
+    // ordinary group timeline block could be RSVP'd.
+    if (!block || block.deletedAt || !block.groupId || !block.isEvent) {
+      throw new NotFoundException('Event not found');
+    }
     await this.groups.requireMember(block.groupId, userId);
     return block;
   }

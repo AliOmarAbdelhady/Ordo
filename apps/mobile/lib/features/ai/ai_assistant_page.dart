@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api.dart';
 import '../../core/app_theme.dart';
 import '../../models/models.dart';
-import '../../shared/format.dart';
 import '../../shared/widgets.dart';
 
 /// Ordo Copilot — a deterministic, on-device NL assistant. It proposes

@@ -280,7 +280,7 @@ class _ShimmerEffectState extends State<ShimmerEffect> with SingleTickerProvider
     final highlight = Theme.of(context).colorScheme.surface;
     return AnimatedBuilder(
       animation: _c,
-      builder: (_, __) {
+      builder: (_, _) {
         return ShaderMask(
           blendMode: BlendMode.srcOver,
           shaderCallback: (rect) {

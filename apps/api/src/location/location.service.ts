@@ -10,7 +10,11 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { haversineMeters, LatLng } from '../common/utils/geo';
 import { PointDto, SetShareDto } from './dto/location.dto';
 
-const APPROX_JITTER_DEG = 0.005; // ~500m fuzzing for approximate mode
+// ~440m radius. APPROXIMATE mode scatters each point uniformly within this disc
+// using a FRESH random offset per push (direction + magnitude), so an observer
+// cannot de-fuzz by subtracting a known constant the way the old fixed +0.005°
+// bias allowed.
+const APPROX_RADIUS_DEG = 0.004;
 
 @Injectable()
 export class LocationService {
@@ -22,18 +26,19 @@ export class LocationService {
 
   async setShare(userId: string, groupId: string, dto: SetShareDto) {
     await this.groups.requirePermission(groupId, userId, 'LOCATION_SHARE');
+
+    // PRECISE_TEMPORARY is meant to be short-lived. If the client omits an expiry
+    // (or sends one in the past), default to 1 hour so precise sharing always
+    // stops on its own instead of broadcasting indefinitely.
+    let expiresAt: Date | null = dto.expiresAt ? new Date(dto.expiresAt) : null;
+    if (dto.mode === LocationMode.PRECISE_TEMPORARY && (!expiresAt || expiresAt <= new Date())) {
+      expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    }
+
     const share = await this.prisma.locationShare.upsert({
       where: { userId_groupId: { userId, groupId } },
-      update: {
-        mode: dto.mode,
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
-      },
-      create: {
-        userId,
-        groupId,
-        mode: dto.mode,
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
-      },
+      update: { mode: dto.mode, expiresAt },
+      create: { userId, groupId, mode: dto.mode, expiresAt },
     });
     return this.toShareDto(share);
   }
@@ -63,9 +68,16 @@ export class LocationService {
       throw new BadRequestException('Invalid coordinates');
     }
 
-    // Approximate mode fuzzes the point so it is not precise.
-    const lat = share.mode === LocationMode.APPROXIMATE ? dto.lat + APPROX_JITTER_DEG : dto.lat;
-    const lng = share.mode === LocationMode.APPROXIMATE ? dto.lng + APPROX_JITTER_DEG : dto.lng;
+    // Approximate mode fuzzes the point so it is not precise. Each push gets a
+    // fresh random offset (uniform within APPROX_RADIUS_DEG) — never a constant.
+    let lat = dto.lat;
+    let lng = dto.lng;
+    if (share.mode === LocationMode.APPROXIMATE) {
+      const angle = Math.random() * 2 * Math.PI;
+      const r = APPROX_RADIUS_DEG * Math.sqrt(Math.random()); // uniform over the disc
+      lat = dto.lat + Math.cos(angle) * r;
+      lng = dto.lng + Math.sin(angle) * r;
+    }
 
     const point = await this.prisma.locationPoint.create({
       data: { shareId: share.id, lat, lng, accuracy: dto.accuracy, heading: dto.heading },

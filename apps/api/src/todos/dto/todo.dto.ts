@@ -1,10 +1,12 @@
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDateString,
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
 } from 'class-validator';
 
@@ -15,9 +17,10 @@ export class CreateTodoDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(4000)
   note?: string;
 
-  @IsString()
+  @IsUUID()
   @IsOptional()
   groupId?: string;
 
@@ -27,6 +30,8 @@ export class CreateTodoDto {
 
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(20)
+  @MaxLength(40, { each: true })
   @IsOptional()
   labels?: string[];
 }
@@ -34,10 +39,12 @@ export class CreateTodoDto {
 export class UpdateTodoDto {
   @IsString()
   @IsOptional()
+  @MaxLength(300)
   title?: string;
 
   @IsString()
   @IsOptional()
+  @MaxLength(4000)
   note?: string;
 
   @IsBoolean()
@@ -54,6 +61,8 @@ export class UpdateTodoDto {
 
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(20)
+  @MaxLength(40, { each: true })
   @IsOptional()
   labels?: string[];
 }
@@ -61,5 +70,6 @@ export class UpdateTodoDto {
 export class ReorderDto {
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(500)
   ids!: string[];
 }

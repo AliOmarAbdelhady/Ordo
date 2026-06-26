@@ -6,6 +6,7 @@ import { TimelineService } from '../timeline/timeline.service';
 import { TasksService } from '../tasks/tasks.service';
 import { TodosService } from '../todos/todos.service';
 import { AiMember, extractTasks, parseCommand } from '../common/utils/ai';
+import { redactBlock } from '../common/utils/visibility';
 import { ApplySuggestionDto, ExtractTasksDto, ParseCommandDto } from './dto/ai.dto';
 import { CreateBlockDto } from '../timeline/dto/timeline.dto';
 import { CreateTaskDto } from '../tasks/dto/task.dto';
@@ -53,6 +54,26 @@ export class AiService {
   async apply(userId: string, dto: ApplySuggestionDto) {
     const s = dto.suggestion ?? {};
     const groupId = dto.groupId ?? s.groupId;
+
+    // The suggestion is client-controlled (only @IsObject at the DTO layer), so
+    // validate the fields we consume before dispatching. Downstream services
+    // still re-check membership/permissions.
+    const ALLOWED_INTENTS = new Set(['CREATE_EVENT', 'CREATE_TASK', 'CREATE_TODO']);
+    if (!ALLOWED_INTENTS.has(s.intent)) {
+      throw new BadRequestException('Unsupported or empty suggestion intent');
+    }
+    if (s.title != null && (typeof s.title !== 'string' || s.title.length > 200)) {
+      throw new BadRequestException('title must be a string up to 200 characters');
+    }
+    if (s.assigneeId != null && (typeof s.assigneeId !== 'string' || s.assigneeId.length > 64)) {
+      throw new BadRequestException('invalid assigneeId');
+    }
+    const st = s.startTime ? new Date(s.startTime) : undefined;
+    const en = s.endTime ? new Date(s.endTime) : undefined;
+    if ((st && isNaN(st.getTime())) || (en && isNaN(en.getTime()))) {
+      throw new BadRequestException('startTime/endTime must be valid ISO dates');
+    }
+    if (st && en && !(st < en)) throw new BadRequestException('Start must be before end');
 
     switch (s.intent) {
       case 'CREATE_EVENT': {
@@ -102,7 +123,7 @@ export class AiService {
     const now = new Date();
     const inAWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    const [taskCount, pendingTasks, todoCount, eventCount, upcoming, messageCount, announcements] = await Promise.all([
+    const [taskCount, pendingTasks, todoCount, eventCount, messageCount, announcements] = await Promise.all([
       this.prisma.task.count({ where: { groupId, deletedAt: null } }),
       this.prisma.task.findMany({
         where: { groupId, deletedAt: null, status: { in: ['TODO', 'IN_PROGRESS', 'BLOCKED'] } },
@@ -112,14 +133,15 @@ export class AiService {
       }),
       this.prisma.todo.count({ where: { groupId, done: false } }),
       this.prisma.timelineBlock.count({ where: { groupId, deletedAt: null, isEvent: true, startTime: { gte: now } } }),
-      this.prisma.timelineBlock.findFirst({
-        where: { groupId, deletedAt: null, startTime: { gte: now, lte: inAWeek } },
-        orderBy: { startTime: 'asc' },
-        select: { id: true, title: true, startTime: true },
-      }),
       this.prisma.message.count({ where: { groupId, deletedAt: null } }),
       this.prisma.announcement.count({ where: { groupId } }),
     ]);
+
+    // Privacy: the "next event" must be redacted per the viewer's relationship to
+    // each block — a PRIVATE block the viewer doesn't own is skipped, and a
+    // BUSY_ONLY block surfaces as "Busy" instead of its real title. The previous
+    // raw findFirst leaked raw titles of private/busy blocks.
+    const upcoming = await this.nextVisibleEvent(groupId, userId, now, inAWeek);
 
     const bullets: string[] = [];
     bullets.push(`${taskCount} tasks (${pendingTasks.length} active).`);
@@ -140,9 +162,9 @@ export class AiService {
   /** Heuristic day plan: today's blocks + tasks due today + open todos. */
   async planDay(userId: string, timezone?: string) {
     const now = new Date();
-    const start = new Date(now);
-    start.setUTCHours(0, 0, 0, 0);
-    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    // Anchor "today" to the user's local midnight (in UTC) so the day window is
+    // correct for their timezone, not always the UTC calendar day.
+    const { start, end } = this.localDayWindow(now, timezone);
 
     const [blocks, tasks, todos] = await Promise.all([
       this.timeline.listSelf(userId, start, end),
@@ -163,6 +185,73 @@ export class AiService {
       tasksDueToday: tasksToday,
       todosToday: todos.todos,
     };
+  }
+
+  /**
+   * Earliest upcoming group EVENT the viewer is allowed to see, privacy-redacted.
+   * Walks candidates earliest-first and returns the first redactBlock does NOT
+   * suppress (PRIVATE blocks the viewer doesn't own are skipped; BUSY_ONLY
+   * surfaces as "Busy"). Only blocks flagged isEvent are considered.
+   */
+  private async nextVisibleEvent(
+    groupId: string,
+    viewerId: string,
+    from: Date,
+    to: Date,
+  ): Promise<{ id: string; title: string; startTime: Date } | null> {
+    const candidates = await this.prisma.timelineBlock.findMany({
+      where: { groupId, deletedAt: null, isEvent: true, startTime: { gte: from, lte: to } },
+      orderBy: { startTime: 'asc' },
+      take: 30,
+    });
+    for (const b of candidates) {
+      const view = redactBlock(
+        {
+          id: b.id,
+          title: b.title,
+          description: b.description,
+          startTime: b.startTime,
+          endTime: b.endTime,
+          color: b.color,
+          location: b.location,
+          visibility: b.visibility,
+          ownerId: b.ownerUserId,
+          groupId: b.groupId,
+          createdById: b.createdById,
+          isEvent: b.isEvent,
+          allDay: b.allDay,
+          source: b.source,
+          reminderMinutesBefore: b.reminderMinutesBefore,
+        },
+        viewerId,
+      );
+      if (view) return { id: b.id, title: view.title, startTime: b.startTime };
+    }
+    return null;
+  }
+
+  /** Local-calendar day window [start, start+24h) for the given IANA timezone. */
+  private localDayWindow(now: Date, timezone?: string): { start: Date; end: Date } {
+    try {
+      const tz = timezone || 'UTC';
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+      const parts = fmt.formatToParts(now);
+      const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? '0');
+      const localMidnightUtc = new Date(Date.UTC(get('year'), get('month') - 1, get('day'), 0, 0, 0));
+      if (!isNaN(localMidnightUtc.getTime())) {
+        return { start: localMidnightUtc, end: new Date(localMidnightUtc.getTime() + 24 * 60 * 60 * 1000) };
+      }
+    } catch {
+      // fall through to UTC
+    }
+    const start = new Date(now);
+    start.setUTCHours(0, 0, 0, 0);
+    return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
   }
 
   private async recordAction(userId: string, input: string, output: any, groupId?: string) {

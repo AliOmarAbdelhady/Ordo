@@ -3,6 +3,7 @@ import { MemberStatus, TaskStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GroupsService } from '../groups/groups.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { can } from '../common/permissions';
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto';
 
 export type TaskTab = 'all' | 'mine' | 'assigned_by_me' | 'late' | 'done';
@@ -145,10 +146,25 @@ export class TasksService {
     const task = await this.prisma.task.findUnique({ where: { id: taskId }, include: this.include() });
     if (!task || task.deletedAt) throw new NotFoundException('Task not found');
 
+    const membership = await this.groups.requireMember(task.groupId, userId);
     const isCreator = task.createdById === userId;
+    const isAdmin = can(membership.role, 'TASK_UPDATE_ANY');
     const isAssignee = task.assignees.some((a) => a.userId === userId);
-    if (!isCreator && !isAssignee) {
-      await this.groups.requirePermission(task.groupId, userId, 'TASK_UPDATE_ANY');
+
+    // Only the creator or an admin may edit task content or reassign. A plain
+    // assignee may advance `status` only — previously an assignee could rewrite
+    // title/description/priority/dueAt.
+    if (!(isCreator || isAdmin)) {
+      const statusOnly =
+        dto.status !== undefined &&
+        dto.title === undefined &&
+        dto.description === undefined &&
+        dto.priority === undefined &&
+        dto.dueAt === undefined &&
+        dto.assigneeIds === undefined;
+      if (!(isAssignee && statusOnly)) {
+        throw new ForbiddenException('Only the creator or an admin can edit this task');
+      }
     }
 
     let assigneeIds: string[] | undefined;

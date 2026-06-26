@@ -138,8 +138,10 @@ export class MediaService implements OnModuleInit {
       });
       return { files: items.map((i) => this.toDto(i)) };
     }
+    // No-group list = the caller's own uploads. The previous `{ groupId: null }`
+    // clause matched EVERY user's personal uploads (an IDOR); only own files here.
     const items = await this.prisma.mediaFile.findMany({
-      where: { OR: [{ uploaderId: userId }, { groupId: null }] },
+      where: { uploaderId: userId },
       orderBy: { createdAt: 'desc' },
       take: 100,
       include: { uploader: { select: { id: true, name: true, avatarUrl: true } } },

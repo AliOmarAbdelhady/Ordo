@@ -106,6 +106,10 @@ class _AddBlockSheetState extends ConsumerState<_AddBlockSheet> {
       toast(context, 'Add a title', error: true);
       return;
     }
+    if (!_allDay && !_end.isAfter(_start)) {
+      toast(context, 'End time must be after the start time', error: true);
+      return;
+    }
     setState(() => _saving = true);
     final api = widget.ref.read(apiClientProvider);
     try {
@@ -143,9 +147,9 @@ class _AddBlockSheetState extends ConsumerState<_AddBlockSheet> {
       }
       if (mounted) Navigator.pop(context, true);
     } on ApiException catch (e) {
-      toast(context, e.message, error: true);
+      if (mounted) toast(context, e.message, error: true);
     } catch (_) {
-      toast(context, 'Could not save. Try again.', error: true);
+      if (mounted) toast(context, 'Could not save. Try again.', error: true);
     } finally {
       if (mounted) setState(() => _saving = false);
     }

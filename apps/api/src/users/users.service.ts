@@ -104,9 +104,25 @@ export class UsersService {
     const [user, groups, blocks, tasks, todos, messages, membershipsRows, availability] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
       this.prisma.group.findMany({ where: { id: { in: groupIds } } }),
-      this.prisma.timelineBlock.findMany({ where: { ownerUserId: userId, deletedAt: null } }),
-      this.prisma.task.findMany({ where: { groupId: { in: groupIds }, deletedAt: null } }),
-      this.prisma.todo.findMany({ where: { OR: [{ ownerUserId: userId }, { groupId: { in: groupIds } }] } }),
+      // Blocks the user owns or authored (self blocks + group blocks they created).
+      this.prisma.timelineBlock.findMany({
+        where: { OR: [{ ownerUserId: userId }, { createdById: userId }], deletedAt: null },
+        take: 1000,
+      }),
+      // Tasks the user authored or is assigned to — not every task in every group.
+      this.prisma.task.findMany({
+        where: {
+          groupId: { in: groupIds },
+          deletedAt: null,
+          OR: [{ createdById: userId }, { assignees: { some: { userId } } }],
+        },
+        take: 1000,
+      }),
+      // To-dos the user owns or authored — not every group to-do.
+      this.prisma.todo.findMany({
+        where: { OR: [{ ownerUserId: userId }, { createdById: userId }] },
+        take: 1000,
+      }),
       this.prisma.message.findMany({ where: { senderId: userId, deletedAt: null }, take: 1000 }),
       this.prisma.groupMember.findMany({ where: { userId }, include: { group: true } }),
       this.prisma.availabilityPreferences.findUnique({ where: { userId } }),
