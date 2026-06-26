@@ -11,8 +11,12 @@ class AuthController extends AsyncNotifier<User?> {
   @override
   Future<User?> build() async {
     _tokens = ref.read(tokenStoreProvider);
-    // Let the Dio interceptor force a logout on failed refresh.
-    ref.read(authLogoutProvider.notifier).state = _forceLogout;
+    // Let the Dio interceptor force a logout on failed refresh. Deferred to a
+    // microtask: Riverpod forbids mutating another provider during build(). The
+    // microtask runs while `load()` is awaited below, before any request, so the
+    // callback is always registered in time.
+    Future.microtask(
+        () => ref.read(authLogoutProvider.notifier).state = _forceLogout);
 
     await _tokens.load();
     if (_tokens.access == null) return null;

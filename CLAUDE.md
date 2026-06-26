@@ -3,7 +3,7 @@
 You are helping build **Ordo**, a time-first group coordination app.
 
 ## Product identity
-Ordo is **not** a chat clone. It is a shared-life coordination system centered on daily, weekly, and monthly **timelines**, privacy-controlled **availability**, group **tasks**, **reminders**, **chat**, **files**, and AI scheduling support.
+Ordo is **not** a chat clone. It is a shared-life coordination system centered on daily, weekly, and monthly **timelines**, privacy-controlled **availability**, group **tasks**, **reminders**, and realtime **chat**.
 
 The four pillars (everything else supports these):
 1. **Timeline** — daily, weekly, monthly.
@@ -13,18 +13,18 @@ The four pillars (everything else supports these):
 
 ## Stack (as implemented in this repo)
 - **Backend:** NestJS (modular monolith) + Prisma ORM + PostgreSQL.
-- **Frontend:** Next.js (App Router) + shadcn/ui + Tailwind + TanStack Query + Socket.IO client. (The original plan specified Flutter; a web app was chosen for best-in-class UI/UX and verifiability. The backend is identical to what a Flutter client would consume.)
+- **Mobile app:** Flutter (Material 3) + Riverpod (state) + go_router (routing) + Dio (HTTP) + flutter_secure_storage (token storage) + socket_io_client (realtime). Runs on Android, iOS, Linux desktop, and web. (The plan called for Flutter mobile-first; that is what was built. The backend is a plain REST + Socket.IO API, so a future web/native client is additive.)
 - **Realtime:** NestJS WebSocket gateway (Socket.IO), in-memory adapter for the MVP (Redis adapter is the scale-up path).
-- **Auth:** JWT access + refresh tokens, bcrypt hashing.
+- **Auth:** JWT access (15m) + rotating refresh (60d) tokens, stored hashed; bcryptjs password hashing.
 - **Reminders:** lightweight in-process scheduler for MVP (BullMQ + Redis is the production path).
 
 ## Monorepo layout
 ```
 ordo/
   apps/
-    api/   # NestJS backend
-    web/   # Next.js frontend
-  packages/
+    api/     # NestJS backend
+    mobile/  # Flutter app — lib/ has core/, features/, models/, shared/
+  packages/  # empty for now (no shared package yet)
 ```
 
 ## Non-negotiable architecture rules
@@ -40,10 +40,12 @@ ordo/
 ## Conventions
 - Backend modules: `controller -> service -> prisma`. Gateways call services.
 - DTOs use `class-validator`. Controllers are thin.
-- Shared types live close to the feature; the web app duplicates lightweight TS types (no shared package yet).
-- Frontend feature folders mirror the plan (today, groups, timeline, tasks, todos, chat, etc.).
+- The mobile app keeps its own Dart models in `lib/models/` mirroring the API shapes; there is no shared package yet.
+- Mobile feature folders under `lib/features/` mirror the pillars: `auth`, `today`, `timeline`, `groups`, `tasks`, `todos`, `chat`, `availability`, `inbox`, `profile`, plus `shell` (bottom-nav app shell). Shared widgets/format live in `lib/shared/`; cross-cutting wiring (api, auth, providers, realtime, router, theme) lives in `lib/core/`.
 
 ## Local dev
 - Postgres is local: `postgresql://postgres:Ali_2792005@localhost:5432/ordo` (see `apps/api/.env`).
-- `pnpm db:migrate` then `pnpm db:seed` to bootstrap data.
-- `pnpm dev:api` (port 4000) and `pnpm dev:web` (port 3000).
+- `pnpm install`, then `pnpm db:migrate` and `pnpm db:seed` to bootstrap data.
+- Backend: `pnpm dev:api` → `http://localhost:4000/api`.
+- Mobile: `cd apps/mobile && flutter pub get`, then `flutter run` (picks a connected device; on Chrome, Linux desktop, or the Android emulator it targets `localhost:4000`; on a **physical device** pass `--dart-define=ORDO_API_URL=http://<your-LAN-IP>:4000`). See `lib/core/config.dart`.
+- Demo login: `ali@ordo.app` / `password123`.
