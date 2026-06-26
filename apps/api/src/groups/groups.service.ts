@@ -6,6 +6,7 @@ import {
 import { GroupMember, GroupRole, GroupType, MemberStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { Permission, can } from '../common/permissions';
+import { redactBlock } from '../common/utils/visibility';
 import {
   GROUP_TEMPLATES,
   GROUP_TYPES,
@@ -301,7 +302,7 @@ export class GroupsService {
             where: { groupId: group.id, createdAt: { gt: lastReadAt }, senderId: { not: userId }, deletedAt: null },
           })
         : 0,
-      this.nextEvent(group.id),
+      this.nextEvent(group.id, userId),
     ]);
 
     return {
@@ -325,13 +326,47 @@ export class GroupsService {
     };
   }
 
-  private async nextEvent(groupId: string) {
+  /**
+   * Next upcoming group event the viewer is allowed to see, privacy-redacted.
+   * Walks candidates earliest-first and returns the first one `redactBlock` does
+   * NOT suppress — so a PRIVATE block the viewer doesn't own is skipped, and a
+   * BUSY_ONLY block surfaces as "Busy" instead of its real title. Without this,
+   * group.nextEvent leaked raw titles of private blocks via the detail payload.
+   */
+  private async nextEvent(
+    groupId: string,
+    userId: string,
+  ): Promise<{ id: string; title: string; startTime: Date } | null> {
     const now = new Date();
-    return this.prisma.timelineBlock.findFirst({
+    const candidates = await this.prisma.timelineBlock.findMany({
       where: { groupId, startTime: { gte: now }, deletedAt: null },
       orderBy: { startTime: 'asc' },
-      select: { id: true, title: true, startTime: true },
+      take: 30,
     });
+    for (const b of candidates) {
+      const view = redactBlock(
+        {
+          id: b.id,
+          title: b.title,
+          description: b.description,
+          startTime: b.startTime,
+          endTime: b.endTime,
+          color: b.color,
+          location: b.location,
+          visibility: b.visibility,
+          ownerId: b.ownerUserId,
+          groupId: b.groupId,
+          createdById: b.createdById,
+          isEvent: b.isEvent,
+          allDay: b.allDay,
+          source: b.source,
+          reminderMinutesBefore: b.reminderMinutesBefore,
+        },
+        userId,
+      );
+      if (view) return { id: b.id, title: view.title, startTime: b.startTime };
+    }
+    return null;
   }
 
   templateList() {

@@ -259,7 +259,10 @@ class _FindSlotFormState extends ConsumerState<_FindSlotForm> {
               ),
               Text('$_minimum', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               IconButton(
-                onPressed: (memberCount == 0 || _minimum < memberCount)
+                // Only enable '+' once the real member count is known, and never
+                // above it — otherwise the user can inflate minimum while detail
+                // is still loading and get a bogus 'No common slots' result.
+                onPressed: (groupDetail.hasValue && memberCount > 0 && _minimum < memberCount)
                     ? () => setState(() => _minimum++)
                     : null,
                 icon: const Icon(Icons.add_circle_outline),
@@ -330,7 +333,7 @@ class _FindSlotFormState extends ConsumerState<_FindSlotForm> {
 
         // Find button
         FilledButton.icon(
-          onPressed: _searching ? null : _findSlots,
+          onPressed: (_searching || !groupDetail.hasValue) ? null : _findSlots,
           icon: _searching
               ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
               : const Icon(Icons.search, size: 20),
@@ -370,7 +373,8 @@ class _FindSlotFormState extends ConsumerState<_FindSlotForm> {
                   context,
                   ref,
                   groupId: widget.groupId,
-                  initialDate: slot.start,
+                  initialStart: slot.start,
+                  initialEnd: slot.end,
                 ),
               ),
               const SizedBox(height: OrdoSpacing.sm),

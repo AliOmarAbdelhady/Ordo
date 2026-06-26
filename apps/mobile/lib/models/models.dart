@@ -394,6 +394,10 @@ class Task {
   final List<Assignee> assignees;
   final int commentCount;
 
+  /// Provenance for the cross-group "mine" view (null in per-group queries).
+  final String? groupName;
+  final String? groupAccent;
+
   Task({
     required this.id,
     required this.groupId,
@@ -407,6 +411,8 @@ class Task {
     this.createdByAvatar,
     required this.assignees,
     required this.commentCount,
+    this.groupName,
+    this.groupAccent,
   });
 
   factory Task.fromJson(Map<String, dynamic> j) => Task(
@@ -422,6 +428,8 @@ class Task {
         createdByAvatar: j['createdBy']?['avatarUrl'],
         assignees: ((j['assignees'] as List?) ?? []).map((e) => Assignee.fromJson(e)).toList(),
         commentCount: j['commentCount'] ?? 0,
+        groupName: j['group']?['name'],
+        groupAccent: j['group']?['accentColor'],
       );
 }
 
@@ -458,7 +466,11 @@ class Todo {
   final int order;
   final List<String> labels;
   final String? groupId;
-  Todo({required this.id, required this.title, this.note, required this.done, this.dueAt, required this.order, required this.labels, this.groupId});
+
+  /// Provenance for the cross-group "mine" view (null for personal to-dos).
+  final String? groupName;
+  final String? groupAccent;
+  Todo({required this.id, required this.title, this.note, required this.done, this.dueAt, required this.order, required this.labels, this.groupId, this.groupName, this.groupAccent});
   factory Todo.fromJson(Map<String, dynamic> j) => Todo(
         id: j['id'],
         title: j['title'],
@@ -468,6 +480,8 @@ class Todo {
         order: j['order'] ?? 0,
         labels: ((j['labels'] as List?) ?? []).map((e) => e.toString()).toList(),
         groupId: j['groupId'],
+        groupName: j['group']?['name'],
+        groupAccent: j['group']?['accentColor'],
       );
 }
 
@@ -588,6 +602,202 @@ class AvailabilityPrefs {
         sleepEnd: j['sleepEnd'] ?? '07:00',
         weekdays: ((j['weekdays'] as List?) ?? [1, 2, 3, 4, 5]).map((e) => e as int).toList(),
       );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// New feature models (search, polls, announcements, inbox, media, location, AI)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class SearchHit {
+  final String kind; // group | task | todo | message | block
+  final String id;
+  final String title;
+  final String? subtitle;
+  final String? groupId;
+  SearchHit({required this.kind, required this.id, required this.title, this.subtitle, this.groupId});
+}
+
+class SearchResult {
+  final List<SearchHit> hits;
+  SearchResult(this.hits);
+  factory SearchResult.fromJson(Map<String, dynamic> j) {
+    final out = <SearchHit>[];
+    for (final g in (j['groups'] as List?) ?? []) {
+      out.add(SearchHit(kind: 'group', id: g['id'], title: g['name'], subtitle: g['type'], groupId: g['id']));
+    }
+    for (final t in (j['tasks'] as List?) ?? []) {
+      out.add(SearchHit(kind: 'task', id: t['id'], title: t['title'], subtitle: t['status'], groupId: t['groupId']));
+    }
+    for (final t in (j['todos'] as List?) ?? []) {
+      out.add(SearchHit(kind: 'todo', id: t['id'], title: t['title'], subtitle: t['done'] == true ? 'done' : null, groupId: t['groupId']));
+    }
+    for (final m in (j['messages'] as List?) ?? []) {
+      out.add(SearchHit(kind: 'message', id: m['id'], title: m['body'] ?? '', subtitle: m['sender']?['name'], groupId: m['groupId']));
+    }
+    for (final b in (j['blocks'] as List?) ?? []) {
+      out.add(SearchHit(kind: 'block', id: b['id'], title: b['title'] ?? 'Busy', subtitle: b['location'], groupId: b['groupId']));
+    }
+    return SearchResult(out);
+  }
+}
+
+class PollOptionResult {
+  final String id;
+  final String text;
+  final int count;
+  final double percent;
+  PollOptionResult({required this.id, required this.text, required this.count, required this.percent});
+  factory PollOptionResult.fromJson(Map<String, dynamic> j) => PollOptionResult(
+        id: j['id'], text: j['text'] ?? '', count: j['count'] ?? 0, percent: (j['percent'] ?? 0).toDouble());
+}
+
+class Poll {
+  final String id;
+  final String groupId;
+  final String question;
+  final bool multiple;
+  final bool closed;
+  final List<PollOptionResult> options;
+  final int totalVoters;
+  final bool viewerHasVoted;
+  final List<String> viewerVotes;
+  Poll({required this.id, required this.groupId, required this.question, required this.multiple, required this.closed, required this.options, required this.totalVoters, required this.viewerHasVoted, required this.viewerVotes});
+  factory Poll.fromJson(Map<String, dynamic> j) {
+    final r = (j['results'] as Map<String, dynamic>?) ?? {};
+    return Poll(
+      id: j['id'],
+      groupId: j['groupId'],
+      question: j['question'] ?? '',
+      multiple: j['multiple'] ?? false,
+      closed: j['closed'] ?? false,
+      options: ((r['options'] as List?) ?? []).map((e) => PollOptionResult.fromJson(e)).toList(),
+      totalVoters: r['totalVoters'] ?? 0,
+      viewerHasVoted: r['viewerHasVoted'] ?? false,
+      viewerVotes: ((r['viewerVotes'] as List?) ?? []).map((e) => e.toString()).toList(),
+    );
+  }
+}
+
+class Announcement {
+  final String id;
+  final String groupId;
+  final String title;
+  final String body;
+  final bool pinned;
+  final String createdByName;
+  final String? createdByAvatar;
+  final DateTime createdAt;
+  Announcement({required this.id, required this.groupId, required this.title, required this.body, required this.pinned, required this.createdByName, this.createdByAvatar, required this.createdAt});
+  factory Announcement.fromJson(Map<String, dynamic> j) => Announcement(
+        id: j['id'],
+        groupId: j['groupId'],
+        title: j['title'] ?? '',
+        body: j['body'] ?? '',
+        pinned: j['pinned'] ?? false,
+        createdByName: j['createdBy']?['name'] ?? 'Unknown',
+        createdByAvatar: j['createdBy']?['avatarUrl'],
+        createdAt: _dt(j['createdAt']),
+      );
+}
+
+class DmThread {
+  final String id;
+  final String? otherId;
+  final String? otherName;
+  final String? otherAvatar;
+  final String? lastBody;
+  final int unreadCount;
+  DmThread({required this.id, this.otherId, this.otherName, this.otherAvatar, this.lastBody, required this.unreadCount});
+  factory DmThread.fromJson(Map<String, dynamic> j) => DmThread(
+        id: j['id'],
+        otherId: j['other']?['id'],
+        otherName: j['other']?['name'],
+        otherAvatar: j['other']?['avatarUrl'],
+        lastBody: j['lastMessage']?['body'],
+        unreadCount: j['unreadCount'] ?? 0,
+      );
+}
+
+class DmMessage {
+  final String id;
+  final String threadId;
+  final String senderId;
+  final String senderName;
+  final String? senderAvatar;
+  final String body;
+  final DateTime createdAt;
+  DmMessage({required this.id, required this.threadId, required this.senderId, required this.senderName, this.senderAvatar, required this.body, required this.createdAt});
+  factory DmMessage.fromJson(Map<String, dynamic> j) => DmMessage(
+        id: j['id'],
+        threadId: j['threadId'],
+        senderId: j['senderId'],
+        senderName: j['sender']?['name'] ?? 'Unknown',
+        senderAvatar: j['sender']?['avatarUrl'],
+        body: j['body'] ?? '',
+        createdAt: _dt(j['createdAt']),
+      );
+}
+
+class MediaFile {
+  final String id;
+  final String? groupId;
+  final String filename;
+  final String mimeType;
+  final int sizeBytes;
+  final String url;
+  final bool isImage;
+  final String uploaderName;
+  final DateTime createdAt;
+  MediaFile({required this.id, this.groupId, required this.filename, required this.mimeType, required this.sizeBytes, required this.url, required this.isImage, required this.uploaderName, required this.createdAt});
+  factory MediaFile.fromJson(Map<String, dynamic> j) => MediaFile(
+        id: j['id'],
+        groupId: j['groupId'],
+        filename: j['filename'] ?? '',
+        mimeType: j['mimeType'] ?? '',
+        sizeBytes: j['sizeBytes'] ?? 0,
+        url: j['url'] ?? '',
+        isImage: j['isImage'] ?? false,
+        uploaderName: j['uploader']?['name'] ?? 'Unknown',
+        createdAt: _dt(j['createdAt']),
+      );
+}
+
+class LocationMember {
+  final String userId;
+  final String name;
+  final String? avatarUrl;
+  final String mode;
+  final double? lat;
+  final double? lng;
+  final double? distanceMeters;
+  final bool isOwn;
+  LocationMember({required this.userId, required this.name, this.avatarUrl, required this.mode, this.lat, this.lng, this.distanceMeters, required this.isOwn});
+  factory LocationMember.fromJson(Map<String, dynamic> j) {
+    final p = j['point'];
+    return LocationMember(
+      userId: j['userId'],
+      name: j['user']?['name'] ?? '',
+      avatarUrl: j['user']?['avatarUrl'],
+      mode: j['mode'] ?? 'OFF',
+      lat: p != null ? (p['lat'] as num?)?.toDouble() : null,
+      lng: p != null ? (p['lng'] as num?)?.toDouble() : null,
+      distanceMeters: p != null ? (p['distanceMeters'] as num?)?.toDouble() : null,
+      isOwn: j['isOwn'] ?? false,
+    );
+  }
+}
+
+/// Structured AI suggestion — kept as a thin wrapper over the raw JSON so the
+/// assistant screen can render a review card and re-send it to /ai/apply-suggestion.
+class AiSuggestion {
+  final Map<String, dynamic> raw;
+  AiSuggestion(this.raw);
+  String get intent => raw['intent'] ?? 'NONE';
+  String get title => raw['title'] ?? '';
+  String? get startTime => raw['startTime'];
+  String? get endTime => raw['endTime'];
+  String? get assigneeName => raw['assigneeName'];
+  String? get dueDate => raw['dueDate'];
 }
 
 Color _color(String hex) {

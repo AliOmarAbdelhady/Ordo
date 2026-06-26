@@ -59,12 +59,18 @@ class InboxPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final asyncNotifs = ref.watch(notificationsProvider);
+    final asyncDms = ref.watch(dmThreadsProvider);
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inbox'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'New message',
+            onPressed: () => context.push('/inbox/new-dm'),
+          ),
           asyncNotifs.maybeWhen(
             data: (list) => list.any((n) => !n.read)
                 ? TextButton(
@@ -77,51 +83,111 @@ class InboxPage extends ConsumerWidget {
         ],
       ),
       body: SafeArea(
-        child: asyncNotifs.when(
-          loading: () => OSkeletonBox(
-            ListView(
-              padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg),
-              children: const [
-                SizedBox(height: OrdoSpacing.md),
-                OSkeleton(height: 64),
-                SizedBox(height: OrdoSpacing.sm),
-                OSkeleton(height: 64),
-                SizedBox(height: OrdoSpacing.sm),
-                OSkeleton(height: 64),
-              ],
-            ),
-          ),
-          error: (e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(OrdoSpacing.xl),
-              child: Text(
-                e is ApiException ? e.message : 'Could not load notifications.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: cs.onSecondary),
+        child: RefreshIndicator(
+          onRefresh: () async {
+            ref.invalidate(notificationsProvider);
+            ref.invalidate(unreadCountProvider);
+          },
+          child: asyncNotifs.when(
+            loading: () => OSkeletonBox(
+              ListView(
+                padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg),
+                children: const [
+                  SizedBox(height: OrdoSpacing.md),
+                  OSkeleton(height: 64),
+                  SizedBox(height: OrdoSpacing.sm),
+                  OSkeleton(height: 64),
+                  SizedBox(height: OrdoSpacing.sm),
+                  OSkeleton(height: 64),
+                ],
               ),
             ),
-          ),
-          data: (notifs) {
-            if (notifs.isEmpty) {
-              return const OEmptyState(
-                icon: Icons.notifications_none_rounded,
-                title: "You're all caught up",
-                subtitle: 'New notifications will appear here.',
-              );
-            }
-            return ListView.separated(
-              padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg, vertical: OrdoSpacing.sm),
-              itemCount: notifs.length,
-              separatorBuilder: (_, _) => const SizedBox(height: OrdoSpacing.sm),
-              itemBuilder: (_, i) {
-                final n = notifs[i];
-                return _NotificationTile(
-                  notification: n,
-                  onTap: () => _open(ref, context, n),
+            error: (e, _) => ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                const SizedBox(height: OrdoSpacing.xxl),
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(OrdoSpacing.xl),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.cloud_off_outlined, color: cs.error, size: 34),
+                        const SizedBox(height: OrdoSpacing.sm),
+                        Text(
+                          e is ApiException ? e.message : 'Could not load notifications.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: cs.onSecondary),
+                        ),
+                        const SizedBox(height: OrdoSpacing.md),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            ref.invalidate(notificationsProvider);
+                            ref.invalidate(unreadCountProvider);
+                          },
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            data: (notifs) {
+              final dms = asyncDms.valueOrNull ?? [];
+              if (notifs.isEmpty && dms.isEmpty) {
+                return ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  children: const [
+                    SizedBox(height: OrdoSpacing.xxl),
+                    OEmptyState(
+                      icon: Icons.notifications_none_rounded,
+                      title: "You're all caught up",
+                      subtitle: 'New notifications and messages will appear here.',
+                    ),
+                  ],
                 );
-              },
-            );
-          },
+              }
+              return ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg, vertical: OrdoSpacing.sm),
+                children: [
+                  if (dms.isNotEmpty) ...[
+                    const OSectionHeader(title: 'Direct messages'),
+                    for (final t in dms)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: OrdoSpacing.sm),
+                        child: OCard(
+                          onTap: () => context.push('/inbox/dm/${t.id}'),
+                          child: Row(children: [
+                            CircleAvatar(child: Text(t.otherName != null && t.otherName!.isNotEmpty ? t.otherName![0] : '?')),
+                            const SizedBox(width: OrdoSpacing.md),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(t.otherName ?? 'Direct message', style: const TextStyle(fontWeight: FontWeight.w600)),
+                                  if (t.lastBody != null) Text(t.lastBody!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, color: cs.onSecondary)),
+                                ],
+                              ),
+                            ),
+                            if (t.unreadCount > 0) OBadge(label: '${t.unreadCount}', color: cs.primary),
+                          ]),
+                        ),
+                      ),
+                    const SizedBox(height: OrdoSpacing.sm),
+                  ],
+                  if (notifs.isNotEmpty) const OSectionHeader(title: 'Activity'),
+                  for (final n in notifs)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: OrdoSpacing.sm),
+                      child: _NotificationTile(notification: n, onTap: () => _open(ref, context, n)),
+                    ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );

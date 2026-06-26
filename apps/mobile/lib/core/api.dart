@@ -92,6 +92,8 @@ final dioProvider = Provider<Dio>((ref) {
           final res = await refreshDio.post('/api/auth/refresh', data: {'refreshToken': tokens.refresh});
           await tokens.save(res.data['accessToken'] as String, res.data['refreshToken'] as String);
           e.requestOptions.headers['Authorization'] = 'Bearer ${tokens.access}';
+          // Notify the realtime layer so the socket reconnects with the fresh token.
+          ref.read(authRefreshProvider)?.call(tokens.access!);
           return handler.resolve(await dio.fetch(e.requestOptions));
         } catch (_) {
           await tokens.clear();
@@ -109,6 +111,12 @@ final dioProvider = Provider<Dio>((ref) {
 /// The auth controller registers a logout callback here so the Dio interceptor
 /// (which lives below it in the provider graph) can trigger a forced logout.
 final authLogoutProvider = StateProvider<void Function()?>((ref) => null);
+
+/// The auth controller registers a refresh callback here so the Dio interceptor
+/// can notify it when the access token is rotated on a 401 — the realtime socket
+/// must reconnect with the fresh token (socket_io_client freezes the handshake
+/// auth at build time, so it would otherwise keep using the stale, expired one).
+final authRefreshProvider = StateProvider<void Function(String newAccessToken)?>((ref) => null);
 
 class ApiClient {
   final Dio dio;
@@ -175,6 +183,13 @@ class ApiClient {
         final r = await dio.post('/api/groups', data: body);
         return Group.fromJson(r.data);
       });
+
+  Future<Group> updateGroup(String id, Map<String, dynamic> body) => _run(() async {
+        final r = await dio.patch('/api/groups/$id', data: body);
+        return Group.fromJson(r.data);
+      });
+
+  Future<void> deleteGroup(String id) => _run(() => dio.delete('/api/groups/$id'));
 
   Future<String> invite(String groupId) => _run(() async {
         final r = await dio.post('/api/groups/$groupId/invite');
@@ -278,6 +293,12 @@ class ApiClient {
         return ((r.data['tasks'] as List)).map((e) => Task.fromJson(e)).toList();
       });
 
+  /// Cross-group "mine": every task assigned to me across all my groups.
+  Future<List<Task>> tasksMine() => _run(() async {
+        final r = await dio.get('/api/tasks/mine');
+        return ((r.data['tasks'] as List)).map((e) => Task.fromJson(e)).toList();
+      });
+
   Future<({Task task, List<TaskComment> comments})> taskDetail(String id) => _run(() async {
         final r = await dio.get('/api/tasks/$id');
         return (
@@ -309,6 +330,12 @@ class ApiClient {
           if (groupId != null) 'groupId': groupId,
           'tab': tab,
         });
+        return ((r.data['todos'] as List)).map((e) => Todo.fromJson(e)).toList();
+      });
+
+  /// Cross-group "mine": my personal to-dos + to-dos in every group I belong to.
+  Future<List<Todo>> todosMine(String tab) => _run(() async {
+        final r = await dio.get('/api/todos/mine', queryParameters: {'tab': tab});
         return ((r.data['todos'] as List)).map((e) => Todo.fromJson(e)).toList();
       });
 
@@ -382,6 +409,170 @@ class ApiClient {
   Future<AvailabilityPrefs> updateAvailability(Map<String, dynamic> body) => _run(() async {
         final r = await dio.patch('/api/me/availability', data: body);
         return AvailabilityPrefs.fromJson(r.data);
+      });
+
+  // ── Account ───────────────────────────────────────────────────────────────
+  Future<void> deleteAccount() => _run(() => dio.delete('/api/me'));
+
+  Future<Map<String, dynamic>> exportData() => _run(() async {
+        final r = await dio.get('/api/me/export');
+        return r.data as Map<String, dynamic>;
+      });
+
+  Future<void> revokeSession(String id) => _run(() => dio.delete('/api/auth/sessions/$id'));
+
+  Future<List<Map<String, dynamic>>> sessions() => _run(() async {
+        final r = await dio.get('/api/auth/sessions');
+        return (r.data['sessions'] as List).map((e) => e as Map<String, dynamic>).toList();
+      });
+
+  // ── OTP ───────────────────────────────────────────────────────────────────
+  Future<String> requestOtp(String target, String value, [String purpose = 'signup']) => _run(() async {
+        final r = await dio.post('/api/auth/request-otp', data: {'target': target, 'value': value, 'purpose': purpose});
+        return (r.data['devCode'] as String?) ?? '';
+      });
+
+  Future<bool> verifyOtp(String target, String value, String code, [String purpose = 'signup']) => _run(() async {
+        final r = await dio.post('/api/auth/verify-otp', data: {'target': target, 'value': value, 'code': code, 'purpose': purpose});
+        return r.data['verified'] == true;
+      });
+
+  // ── Search ────────────────────────────────────────────────────────────────
+  Future<SearchResult> search(String q) => _run(() async {
+        final r = await dio.get('/api/search', queryParameters: {'q': q});
+        return SearchResult.fromJson(r.data);
+      });
+
+  // ── Polls ─────────────────────────────────────────────────────────────────
+  Future<List<Poll>> polls(String groupId) => _run(() async {
+        final r = await dio.get('/api/groups/$groupId/polls');
+        return ((r.data['polls'] as List)).map((e) => Poll.fromJson(e)).toList();
+      });
+
+  Future<Poll> createPoll(String groupId, String question, List<String> options, {bool multiple = false}) => _run(() async {
+        final r = await dio.post('/api/groups/$groupId/polls', data: {
+          'question': question,
+          'options': options.map((t) => {'text': t}).toList(),
+          'multiple': multiple,
+        });
+        return Poll.fromJson(r.data);
+      });
+
+  Future<Poll> votePoll(String pollId, List<String> optionIds) => _run(() async {
+        final r = await dio.post('/api/polls/$pollId/vote', data: {'optionIds': optionIds});
+        return Poll.fromJson(r.data);
+      });
+
+  Future<void> deletePoll(String pollId) => _run(() => dio.delete('/api/polls/$pollId'));
+
+  // ── Announcements ─────────────────────────────────────────────────────────
+  Future<List<Announcement>> announcements(String groupId) => _run(() async {
+        final r = await dio.get('/api/groups/$groupId/announcements');
+        return ((r.data['announcements'] as List)).map((e) => Announcement.fromJson(e)).toList();
+      });
+
+  Future<Announcement> createAnnouncement(String groupId, String title, String body) => _run(() async {
+        final r = await dio.post('/api/groups/$groupId/announcements', data: {'title': title, 'body': body});
+        return Announcement.fromJson(r.data);
+      });
+
+  Future<void> deleteAnnouncement(String id) => _run(() => dio.delete('/api/announcements/$id'));
+
+  // ── Inbox / DMs ───────────────────────────────────────────────────────────
+  Future<List<DmThread>> dmThreads() => _run(() async {
+        final r = await dio.get('/api/inbox/threads');
+        return ((r.data['threads'] as List)).map((e) => DmThread.fromJson(e)).toList();
+      });
+
+  Future<String> startDm(String otherUserId) => _run(() async {
+        final r = await dio.post('/api/inbox/threads', data: {'otherUserId': otherUserId});
+        return r.data['threadId'] as String;
+      });
+
+  Future<({List<DmMessage> messages, bool hasMore})> dmMessages(String threadId, {DateTime? before}) => _run(() async {
+        final r = await dio.get('/api/inbox/threads/$threadId/messages',
+            queryParameters: {if (before != null) 'before': before.toIso8601String()});
+        final list = ((r.data['messages'] as List)).map((e) => DmMessage.fromJson(e)).toList();
+        return (messages: list, hasMore: (r.data['hasMore'] as bool?) ?? false);
+      });
+
+  Future<DmMessage> sendDm(String threadId, String body) => _run(() async {
+        final r = await dio.post('/api/inbox/threads/$threadId/messages', data: {'body': body});
+        return DmMessage.fromJson(r.data);
+      });
+
+  Future<void> markDmRead(String threadId) => _run(() => dio.post('/api/inbox/threads/$threadId/read'));
+
+  // ── Media / Files ─────────────────────────────────────────────────────────
+  Future<List<MediaFile>> media({String? groupId}) => _run(() async {
+        final r = await dio.get('/api/media', queryParameters: {if (groupId != null) 'groupId': groupId});
+        return ((r.data['files'] as List)).map((e) => MediaFile.fromJson(e)).toList();
+      });
+
+  Future<MediaFile> uploadMedia(String path, String filename, {String? groupId}) => _run(() async {
+        // The server infers the MIME from the filename extension, so we don't
+        // need to set a precise part content-type (mobile pickers are unreliable).
+        final form = FormData.fromMap({
+          'file': await MultipartFile.fromFile(path, filename: filename),
+        });
+        final r = await dio.post('/api/media', data: form, queryParameters: {if (groupId != null) 'groupId': groupId});
+        return MediaFile.fromJson(r.data);
+      });
+
+  Future<void> deleteMedia(String id) => _run(() => dio.delete('/api/media/$id'));
+
+  // ── Location ──────────────────────────────────────────────────────────────
+  Future<List<LocationMember>> locations(String groupId) => _run(() async {
+        final r = await dio.get('/api/groups/$groupId/location');
+        return ((r.data['locations'] as List)).map((e) => LocationMember.fromJson(e)).toList();
+      });
+
+  Future<void> setLocationShare(String groupId, String mode) => _run(() async {
+        await dio.post('/api/groups/$groupId/location', data: {'mode': mode});
+      });
+
+  Future<void> pushLocation(String groupId, double lat, double lng) => _run(() async {
+        await dio.post('/api/groups/$groupId/location/point', data: {'lat': lat, 'lng': lng});
+      });
+
+  Future<void> stopLocation(String groupId) => _run(() => dio.delete('/api/groups/$groupId/location'));
+
+  // ── Categories ────────────────────────────────────────────────────────────
+  Future<List<Map<String, dynamic>>> categories({String? groupId}) => _run(() async {
+        final r = await dio.get('/api/timeline/categories', queryParameters: {if (groupId != null) 'groupId': groupId});
+        return ((r.data['categories'] as List)).map((e) => e as Map<String, dynamic>).toList();
+      });
+
+  // ── Events / RSVP ─────────────────────────────────────────────────────────
+  Future<Map<String, dynamic>> rsvp(String blockId, String status) => _run(() async {
+        final r = await dio.post('/api/events/$blockId/rsvp', data: {'status': status});
+        return r.data;
+      });
+
+  // ── AI ────────────────────────────────────────────────────────────────────
+  Future<AiSuggestion> aiParse(String text, {String? groupId}) => _run(() async {
+        final r = await dio.post('/api/ai/parse-command', data: {'text': text, if (groupId != null) 'groupId': groupId});
+        return AiSuggestion(r.data['suggestion'] as Map<String, dynamic>);
+      });
+
+  Future<List<AiSuggestion>> aiExtractTasks(List<String> messages, {String? groupId}) => _run(() async {
+        final r = await dio.post('/api/ai/extract-tasks', data: {'messages': messages, if (groupId != null) 'groupId': groupId});
+        return ((r.data['suggestions'] as List)).map((e) => AiSuggestion(e as Map<String, dynamic>)).toList();
+      });
+
+  Future<Map<String, dynamic>> aiSummarize(String groupId) => _run(() async {
+        final r = await dio.post('/api/ai/summarize-group', data: {'groupId': groupId});
+        return r.data;
+      });
+
+  Future<Map<String, dynamic>> aiPlanDay() => _run(() async {
+        final r = await dio.get('/api/ai/plan-day');
+        return r.data;
+      });
+
+  Future<Map<String, dynamic>> aiApply(Map<String, dynamic> suggestion, {String? groupId}) => _run(() async {
+        final r = await dio.post('/api/ai/apply-suggestion', data: {'suggestion': suggestion, if (groupId != null) 'groupId': groupId});
+        return r.data;
       });
 }
 

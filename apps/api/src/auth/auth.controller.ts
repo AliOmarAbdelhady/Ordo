@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Req } from '@nestjs/common'
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto, RefreshDto } from './dto/auth.dto';
+import { RequestOtpDto, VerifyOtpDto } from './dto/otp.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -52,5 +53,22 @@ export class AuthController {
   @Delete('sessions/:id')
   revoke(@CurrentUser('id') userId: string, @Param('id') sessionId: string) {
     return this.auth.revokeSession(userId, sessionId);
+  }
+
+  @Public()
+  @Post('request-otp')
+  requestOtp(@Body() dto: RequestOtpDto) {
+    return this.auth.requestOtp(dto);
+  }
+
+  @Public()
+  @Post('verify-otp')
+  verifyOtp(@Body() dto: VerifyOtpDto) {
+    return this.auth.verifyOtp(dto);
+  }
+
+  @Post('verify-phone')
+  verifyPhone(@CurrentUser('id') userId: string, @Body() dto: VerifyOtpDto) {
+    return this.auth.verifyOtp(dto).then((r) => this.auth.markVerified(userId, 'phone', dto.value));
   }
 }

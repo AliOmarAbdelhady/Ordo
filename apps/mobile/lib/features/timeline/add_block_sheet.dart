@@ -15,21 +15,32 @@ const List<Color> _palette = [
 ];
 
 /// Opens the add-block sheet. [groupId] null → self space (enables sync).
-Future<void> showAddBlockSheet(BuildContext context, WidgetRef ref, {String? groupId, DateTime? initialDate}) async {
+/// Pass [initialStart]/[initialEnd] to pre-fill exact times (e.g. from a found
+/// slot); otherwise [initialDate] seeds only the day with a rounded-now time.
+Future<void> showAddBlockSheet(BuildContext context, WidgetRef ref,
+    {String? groupId, DateTime? initialDate, DateTime? initialStart, DateTime? initialEnd}) async {
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     showDragHandle: true,
-    builder: (_) => _AddBlockSheet(groupId: groupId, initialDate: initialDate, ref: ref),
+    builder: (_) => _AddBlockSheet(
+      groupId: groupId,
+      initialDate: initialDate,
+      initialStart: initialStart,
+      initialEnd: initialEnd,
+      ref: ref,
+    ),
   );
 }
 
 class _AddBlockSheet extends ConsumerStatefulWidget {
   final String? groupId;
   final DateTime? initialDate;
+  final DateTime? initialStart;
+  final DateTime? initialEnd;
   final WidgetRef ref;
-  const _AddBlockSheet({this.groupId, this.initialDate, required this.ref});
+  const _AddBlockSheet({this.groupId, this.initialDate, this.initialStart, this.initialEnd, required this.ref});
 
   @override
   ConsumerState<_AddBlockSheet> createState() => _AddBlockSheetState();
@@ -52,11 +63,17 @@ class _AddBlockSheetState extends ConsumerState<_AddBlockSheet> {
   @override
   void initState() {
     super.initState();
-    final base = widget.initialDate ?? DateTime.now();
     final now = DateTime.now();
-    _start = DateTime(base.year, base.month, base.day, now.hour, (now.minute / 15).ceil() * 15 % 60);
-    if (_start.isBefore(now)) _start = _start.add(const Duration(hours: 1));
-    _end = _start.add(const Duration(hours: 1));
+    if (widget.initialStart != null) {
+      // Pre-filled from a found slot / external caller: honour the exact times.
+      _start = widget.initialStart!;
+      _end = widget.initialEnd ?? _start.add(const Duration(hours: 1));
+    } else {
+      final base = widget.initialDate ?? DateTime.now();
+      _start = DateTime(base.year, base.month, base.day, now.hour, (now.minute / 15).ceil() * 15 % 60);
+      if (_start.isBefore(now)) _start = _start.add(const Duration(hours: 1));
+      _end = _start.add(const Duration(hours: 1));
+    }
     if (widget.groupId != null) _visibility = 'TITLE_ONLY';
   }
 
@@ -112,8 +129,18 @@ class _AddBlockSheetState extends ConsumerState<_AddBlockSheet> {
         await api.setSyncs(block.id, _syncs.entries.map((e) => SyncEntry(groupId: e.key, visibility: e.value)).toList());
       }
 
-      // Invalidate timelines so they refresh.
+      // Invalidate timelines so the new block appears immediately. Invalidating
+      // a family provider with no argument clears every cached date range, so the
+      // active Day/Week/Month view refreshes without a manual pull.
       widget.ref.invalidate(groupsProvider);
+      if (widget.groupId == null) {
+        widget.ref.invalidate(selfTimelineProvider);
+      }
+      // Group timelines also change for a new group block, or when a self block
+      // is synced into groups.
+      if (widget.groupId != null || _syncs.isNotEmpty) {
+        widget.ref.invalidate(groupTimelineProvider);
+      }
       if (mounted) Navigator.pop(context, true);
     } on ApiException catch (e) {
       toast(context, e.message, error: true);

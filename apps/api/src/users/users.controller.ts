@@ -27,6 +27,11 @@ export class UsersController {
     return this.users.getAvailability(userId);
   }
 
+  @Get('export')
+  exportData(@CurrentUser('id') userId: string) {
+    return this.users.exportData(userId);
+  }
+
   @Patch('availability')
   availability(@CurrentUser('id') userId: string, @Body() dto: UpdateAvailabilityDto) {
     return this.users.updateAvailability(userId, dto);

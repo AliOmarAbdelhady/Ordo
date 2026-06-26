@@ -96,6 +96,26 @@ class AppShell extends ConsumerWidget {
                     context.push('/find-slot');
                   },
                 ),
+                _CommandTile(
+                  icon: Icons.manage_search,
+                  color: OrdoAccent.cyan.light,
+                  title: 'Search',
+                  subtitle: 'Groups, tasks, to-dos, messages',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    context.push('/search');
+                  },
+                ),
+                _CommandTile(
+                  icon: Icons.auto_awesome_outlined,
+                  color: OrdoAccent.violet.light,
+                  title: 'Ordo Copilot',
+                  subtitle: 'Plan with AI — review before applying',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    context.push('/assistant');
+                  },
+                ),
               ],
             ),
           ),

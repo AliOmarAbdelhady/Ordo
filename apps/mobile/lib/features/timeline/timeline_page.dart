@@ -619,9 +619,14 @@ class _BlockTile extends StatelessWidget {
                       _onDelete(context);
                   }
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'sync', child: Text('Sync to groups')),
-                  PopupMenuItem(value: 'delete', child: Text('Delete')),
+                itemBuilder: (_) => [
+                  // Sync is a self-block-only privacy feature (the backend's
+                  // assertOwned requires ownerUserId === userId). Group blocks
+                  // have source == 'GROUP', so hide it there to avoid a 403 that
+                  // would leave the sheet spinning forever.
+                  if (item.source == 'SELF')
+                    const PopupMenuItem(value: 'sync', child: Text('Sync to groups')),
+                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
                 ],
               ),
           ],

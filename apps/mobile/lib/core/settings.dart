@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/models.dart';
+import 'api.dart';
 import 'app_theme.dart';
 
 class SettingsState {
@@ -34,11 +35,28 @@ class SettingsController extends Notifier<SettingsState> {
   Future<void> setThemeMode(ThemeMode mode) async {
     state = SettingsState(mode, state.accentName);
     if (_prefs != null) await _prefs!.setString('ordo_theme', _modeToString(mode));
+    _persist({'theme': _modeToString(mode)});
   }
 
   Future<void> setAccent(String name) async {
     state = SettingsState(state.themeMode, name);
     if (_prefs != null) await _prefs!.setString('ordo_accent', name);
+    _persist({'accentColor': name});
+  }
+
+  /// Push a preference change to the server so it survives across devices and
+  /// sessions (PATCH /me/preferences). Fire-and-forget: the live local state is
+  /// already updated, so a transient failure must not revert it. This also makes
+  /// `syncFromUser` idempotent — once pushed, the server value matches the local
+  /// choice and a later profile save no longer clobbers the live theme/accent.
+  void _persist(Map<String, dynamic> body) {
+    Future.microtask(() async {
+      try {
+        await ref.read(apiClientProvider).updatePreferences(body);
+      } catch (_) {
+        // Swallow: local + SharedPreferences already hold the user's choice.
+      }
+    });
   }
 
   /// Pull theme + accent from the user's profile after login.

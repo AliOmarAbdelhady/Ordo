@@ -34,6 +34,10 @@ class _TodosPageState extends ConsumerState<TodosPage> {
   _Tab _tab = _Tab.today;
   final _addController = TextEditingController();
   bool _adding = false;
+  // Optimistic toggle state: flip the checkbox instantly, guard against
+  // double-taps firing a second PATCH, revert on error.
+  final Set<String> _pending = {};
+  final Map<String, bool> _doneOverride = {};
 
   @override
   void dispose() {
@@ -61,13 +65,27 @@ class _TodosPageState extends ConsumerState<TodosPage> {
   }
 
   Future<void> _toggleDone(Todo todo) async {
+    if (_pending.contains(todo.id)) return; // ignore double-taps mid-flight
+    final next = !todo.done;
+    setState(() {
+      _pending.add(todo.id);
+      _doneOverride[todo.id] = next;
+    });
     try {
-      await ref.read(apiClientProvider).updateTodo(todo.id, {'done': !todo.done});
+      await ref.read(apiClientProvider).updateTodo(todo.id, {'done': next});
       ref.invalidate(todosProvider(_query));
     } on ApiException catch (e) {
-      if (mounted) toast(context, e.message, error: true);
+      if (mounted) {
+        setState(() => _doneOverride.remove(todo.id)); // revert optimistic flip
+        toast(context, e.message, error: true);
+      }
     } catch (_) {
-      if (mounted) toast(context, 'Could not update to-do.', error: true);
+      if (mounted) {
+        setState(() => _doneOverride.remove(todo.id));
+        toast(context, 'Could not update to-do.', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _pending.remove(todo.id));
     }
   }
 
@@ -169,6 +187,7 @@ class _TodosPageState extends ConsumerState<TodosPage> {
                     itemCount: todos.length,
                     itemBuilder: (_, i) {
                       final todo = todos[i];
+                      final done = _doneOverride[todo.id] ?? todo.done;
                       return Dismissible(
                         key: ValueKey(todo.id),
                         direction: DismissDirection.endToStart,
@@ -185,7 +204,7 @@ class _TodosPageState extends ConsumerState<TodosPage> {
                           await _deleteTodo(todo);
                           return false;
                         },
-                        child: _TodoTile(todo: todo, onToggle: () => _toggleDone(todo), onDelete: () => _deleteTodo(todo)),
+                        child: _TodoTile(todo: todo, done: done, onToggle: () => _toggleDone(todo), onDelete: () => _deleteTodo(todo)),
                       );
                     },
                   );
@@ -227,9 +246,10 @@ String _emptySubtitle(_Tab tab) {
 
 class _TodoTile extends StatelessWidget {
   final Todo todo;
+  final bool done;
   final VoidCallback onToggle;
   final VoidCallback onDelete;
-  const _TodoTile({required this.todo, required this.onToggle, required this.onDelete});
+  const _TodoTile({required this.todo, required this.done, required this.onToggle, required this.onDelete});
 
   @override
   Widget build(BuildContext context) {
@@ -238,7 +258,7 @@ class _TodoTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.md, vertical: OrdoSpacing.sm + 2),
       child: Row(
         children: [
-          _RoundCheckbox(checked: todo.done, onTap: onToggle),
+          _RoundCheckbox(checked: done, onTap: onToggle),
           const SizedBox(width: OrdoSpacing.md),
           Expanded(
             child: Column(
@@ -249,8 +269,8 @@ class _TodoTile extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w500,
-                    decoration: todo.done ? TextDecoration.lineThrough : TextDecoration.none,
-                    color: todo.done ? cs.onSecondary : cs.onSurface,
+                    decoration: done ? TextDecoration.lineThrough : TextDecoration.none,
+                    color: done ? cs.onSecondary : cs.onSurface,
                   ),
                 ),
                 if (todo.dueAt != null) ...[

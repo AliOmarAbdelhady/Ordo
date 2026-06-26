@@ -21,6 +21,12 @@ export class TasksController {
     return this.tasks.list(userId, groupId, tab);
   }
 
+  /** Cross-group "mine" view for the unified dashboard (tasks assigned to me, all groups). */
+  @Get('mine')
+  listMine(@CurrentUser('id') userId: string) {
+    return this.tasks.listMine(userId);
+  }
+
   @Get(':id')
   getOne(@CurrentUser('id') userId: string, @Param('id') id: string) {
     return this.tasks.getOne(userId, id);

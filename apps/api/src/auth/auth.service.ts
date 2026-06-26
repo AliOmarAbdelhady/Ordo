@@ -213,4 +213,59 @@ export class AuthService {
     const mult = unit === 's' ? 1000 : unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
     return n * mult;
   }
+
+  // ── OTP verification (phone / email) ───────────────────────────────────────
+  // Dev-only note: there is no SMS/email provider wired up, so the issued code
+  // is returned in the response under `devCode` for local development. In
+  // production this would be delivered out-of-band and `devCode` omitted.
+  async requestOtp(dto: { target: 'phone' | 'email'; value: string; purpose?: string }) {
+    const purpose = dto.purpose ?? 'signup';
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    await this.prisma.verificationCode.create({
+      data: {
+        target: dto.target,
+        value: dto.value.toLowerCase().trim(),
+        codeHash: await hash(code, await genSalt(this.rounds)),
+        purpose,
+        expiresAt,
+      },
+    });
+    return { sent: true, purpose, expiresAt: expiresAt.toISOString(), devCode: code };
+  }
+
+  async verifyOtp(dto: { target: 'phone' | 'email'; value: string; code: string; purpose?: string }) {
+    const value = dto.value.toLowerCase().trim();
+    const purpose = dto.purpose ?? 'signup';
+    const record = await this.prisma.verificationCode.findFirst({
+      where: { value, target: dto.target, purpose, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!record) throw new UnauthorizedException('No code requested');
+    if (record.expiresAt < new Date()) throw new UnauthorizedException('Code expired');
+    if (record.attempts >= 5) throw new UnauthorizedException('Too many attempts');
+
+    const ok = await compare(dto.code, record.codeHash);
+    if (!ok) {
+      await this.prisma.verificationCode.update({
+        where: { id: record.id },
+        data: { attempts: { increment: 1 } },
+      });
+      throw new UnauthorizedException('Invalid code');
+    }
+    await this.prisma.verificationCode.update({
+      where: { id: record.id },
+      data: { consumedAt: new Date() },
+    });
+    return { verified: true, target: dto.target, value };
+  }
+
+  /** Mark the caller's phone/email as verified after a successful OTP. */
+  async markVerified(userId: string, target: 'phone' | 'email', value: string) {
+    const data = target === 'phone'
+      ? { phoneVerified: true, phone: value }
+      : { emailVerified: true };
+    const user = await this.prisma.user.update({ where: { id: userId }, data });
+    return toPublicUser(user);
+  }
 }

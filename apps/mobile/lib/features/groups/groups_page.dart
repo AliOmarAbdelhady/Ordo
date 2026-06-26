@@ -307,23 +307,11 @@ class _GroupTile extends StatelessWidget {
     );
   }
 
+  // Prisma GroupType enum: FAMILY, FRIENDS, UNIVERSITY, GYM, SPORTS, WORK,
+  // PROJECT, TRAVEL, CUSTOM. Title-case the enum value (CUSTOM -> 'Custom').
   String _typeLabel(String type) {
-    switch (type) {
-      case 'FAMILY':
-        return 'Family';
-      case 'TEAM':
-        return 'Team';
-      case 'CLASS':
-        return 'Class';
-      case 'FRIENDS':
-        return 'Friends';
-      case 'COUPLE':
-        return 'Couple';
-      case 'CLUB':
-        return 'Club';
-      default:
-        return 'Custom';
-    }
+    if (type.isEmpty) return 'Custom';
+    return type[0] + type.substring(1).toLowerCase();
   }
 }
 

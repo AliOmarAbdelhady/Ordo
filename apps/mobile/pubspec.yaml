@@ -19,6 +19,7 @@ dependencies:
   dio: ^5.7.0
   flutter_secure_storage: ^9.2.3
   shared_preferences: ^2.3.3
+  file_picker: ^8.1.7
 
   # Realtime
   socket_io_client: ^2.0.3+1

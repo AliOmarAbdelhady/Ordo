@@ -92,4 +92,47 @@ export class UsersService {
     });
     return { ok: true };
   }
+
+  /** GDPR-style data export: everything the user owns or is a member of. */
+  async exportData(userId: string) {
+    const memberships = await this.prisma.groupMember.findMany({
+      where: { userId, status: 'ACTIVE' },
+      select: { groupId: true },
+    });
+    const groupIds = memberships.map((m) => m.groupId);
+
+    const [user, groups, blocks, tasks, todos, messages, membershipsRows, availability] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId } }),
+      this.prisma.group.findMany({ where: { id: { in: groupIds } } }),
+      this.prisma.timelineBlock.findMany({ where: { ownerUserId: userId, deletedAt: null } }),
+      this.prisma.task.findMany({ where: { groupId: { in: groupIds }, deletedAt: null } }),
+      this.prisma.todo.findMany({ where: { OR: [{ ownerUserId: userId }, { groupId: { in: groupIds } }] } }),
+      this.prisma.message.findMany({ where: { senderId: userId, deletedAt: null }, take: 1000 }),
+      this.prisma.groupMember.findMany({ where: { userId }, include: { group: true } }),
+      this.prisma.availabilityPreferences.findUnique({ where: { userId } }),
+    ]);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      user: user
+        ? {
+            id: user.id,
+            email: user.email,
+            phone: user.phone,
+            name: user.name,
+            username: user.username,
+            bio: user.bio,
+            timezone: user.timezone,
+            createdAt: user.createdAt.toISOString(),
+          }
+        : null,
+      availability,
+      groups,
+      memberships: membershipsRows,
+      timelineBlocks: blocks,
+      tasks,
+      todos,
+      messages: messages.map((m) => ({ id: m.id, groupId: m.groupId, body: m.body, createdAt: m.createdAt })),
+    };
+  }
 }

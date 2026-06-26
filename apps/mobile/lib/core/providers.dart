@@ -58,6 +58,12 @@ final tasksProvider = FutureProvider.family<List<Task>, TaskQuery>((ref, q) asyn
   return ref.read(apiClientProvider).tasks(q.groupId, q.tab);
 });
 
+/// Every task assigned to the current user, across ALL their groups (dashboard).
+final myTasksProvider = FutureProvider<List<Task>>((ref) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).tasksMine();
+});
+
 final taskDetailProvider = FutureProvider.family<({Task task, List<TaskComment> comments}), String>((ref, id) async {
   ref.watch(authControllerProvider);
   return ref.read(apiClientProvider).taskDetail(id);
@@ -70,6 +76,12 @@ final todosProvider = FutureProvider.family<List<Todo>, TodoQuery>((ref, q) asyn
   return ref.read(apiClientProvider).todos(q.groupId, q.tab);
 });
 
+/// The user's to-dos everywhere: personal + every group they belong to (dashboard).
+final myTodosProvider = FutureProvider.family<List<Todo>, String>((ref, tab) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).todosMine(tab);
+});
+
 // ── Notifications ────────────────────────────────────────────────────────────
 final notificationsProvider = FutureProvider<List<OrdoNotification>>((ref) async {
   ref.watch(authControllerProvider);
@@ -79,4 +91,34 @@ final notificationsProvider = FutureProvider<List<OrdoNotification>>((ref) async
 final unreadCountProvider = FutureProvider<int>((ref) async {
   ref.watch(authControllerProvider);
   return ref.read(apiClientProvider).unreadCount();
+});
+
+// ── Polls ────────────────────────────────────────────────────────────────────
+final pollsProvider = FutureProvider.family<List<Poll>, String>((ref, groupId) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).polls(groupId);
+});
+
+// ── Announcements ────────────────────────────────────────────────────────────
+final announcementsProvider = FutureProvider.family<List<Announcement>, String>((ref, groupId) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).announcements(groupId);
+});
+
+// ── Media / Files ────────────────────────────────────────────────────────────
+final mediaProvider = FutureProvider.family<List<MediaFile>, String?>((ref, groupId) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).media(groupId: groupId);
+});
+
+// ── Location ─────────────────────────────────────────────────────────────────
+final locationsProvider = FutureProvider.family<List<LocationMember>, String>((ref, groupId) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).locations(groupId);
+});
+
+// ── Inbox / DM threads ────────────────────────────────────────────────────────
+final dmThreadsProvider = FutureProvider<List<DmThread>>((ref) async {
+  ref.watch(authControllerProvider);
+  return ref.read(apiClientProvider).dmThreads();
 });

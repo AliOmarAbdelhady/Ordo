@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { MemberStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GroupsService } from '../groups/groups.service';
 import { CreateTodoDto, UpdateTodoDto } from './dto/todo.dto';
@@ -15,6 +16,8 @@ export interface TodoDto {
   labels: string[];
   groupId: string | null;
   createdAt: string;
+  /** Only populated by the cross-group "mine" view (provenance). */
+  group?: { id: string; name: string; accentColor: string } | null;
 }
 
 @Injectable()
@@ -51,7 +54,6 @@ export class TodosService {
       await this.groups.requireMember(groupId, userId);
     }
     const where: any = {
-      deletedAt: null,
       ...(groupId ? { groupId } : { ownerUserId: userId, groupId: null }),
     };
     const now = new Date();
@@ -60,7 +62,9 @@ export class TodosService {
 
     if (tab === 'today') {
       where.done = false;
-      where.OR = [{ dueAt: { lt: endOfToday } }];
+      // Today = overdue + due today + undated (act-on-now items). Without the
+      // undated clause, a freshly added to-do (no due date) is invisible here.
+      where.OR = [{ dueAt: { lt: endOfToday } }, { dueAt: null }];
     } else if (tab === 'upcoming') {
       where.done = false;
       where.dueAt = { gte: endOfToday };
@@ -78,10 +82,66 @@ export class TodosService {
     return { todos: todos.map((t) => this.toDto(t)) };
   }
 
+  /**
+   * Cross-group "mine" view for the unified dashboard: the user's personal
+   * to-dos PLUS to-dos in every group they are an active member of, each
+   * enriched with group provenance. Personal to-dos carry group = null.
+   */
+  async listMine(userId: string, tab: TodoTab): Promise<{ todos: TodoDto[] }> {
+    const memberships = await this.prisma.groupMember.findMany({
+      where: { userId, status: MemberStatus.ACTIVE },
+      select: { groupId: true },
+    });
+    const groupIds = memberships.map((m) => m.groupId);
+    // Todo has no `group` relation, so fetch the owning groups separately for
+    // provenance and attach by id below.
+    const groups = groupIds.length
+      ? await this.prisma.group.findMany({
+          where: { id: { in: groupIds } },
+          select: { id: true, name: true, accentColor: true },
+        })
+      : [];
+    const groupById = new Map(groups.map((g) => [g.id, g]));
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
+
+    let tabFilter: any;
+    if (tab === 'today') {
+      tabFilter = { done: false, OR: [{ dueAt: { lt: endOfToday } }, { dueAt: null }] };
+    } else if (tab === 'upcoming') {
+      tabFilter = { done: false, dueAt: { gte: endOfToday } };
+    } else if (tab === 'no_date') {
+      tabFilter = { done: false, dueAt: null };
+    } else if (tab === 'done') {
+      tabFilter = { done: true };
+    } else {
+      tabFilter = {};
+    }
+
+    // Personal (owner) + every group the user belongs to.
+    const scope = groupIds.length
+      ? { OR: [{ ownerUserId: userId, groupId: null }, { groupId: { in: groupIds } }] }
+      : { ownerUserId: userId, groupId: null };
+
+    const todos = await this.prisma.todo.findMany({
+      where: { AND: [scope, tabFilter] } as any,
+      orderBy: [{ done: 'asc' }, { order: 'asc' }, { createdAt: 'desc' }],
+      take: 200,
+    });
+    return {
+      todos: todos.map((t) => ({
+        ...this.toDto(t),
+        group: t.groupId ? groupById.get(t.groupId) ?? null : null,
+      })),
+    };
+  }
+
   async update(userId: string, todoId: string, dto: UpdateTodoDto): Promise<TodoDto> {
     const todo = await this.prisma.todo.findUnique({ where: { id: todoId } });
     if (!todo) throw new NotFoundException('To-do not found');
-    this.assertCanMutate(todo, userId);
+    await this.assertCanMutate(todo, userId);
 
     const updated = await this.prisma.todo.update({
       where: { id: todoId },
@@ -98,6 +158,11 @@ export class TodosService {
   }
 
   async reorder(userId: string, ids: string[]) {
+    // Authorize every id before mutating: a caller must own or be a member of
+    // the owning group of each to-do, otherwise foreign to-dos could be reordered.
+    const todos = await this.prisma.todo.findMany({ where: { id: { in: ids } } });
+    if (todos.length !== ids.length) throw new NotFoundException('To-do not found');
+    for (const todo of todos) await this.assertCanMutate(todo, userId);
     await Promise.all(
       ids.map((id, index) =>
         this.prisma.todo.updateMany({ where: { id }, data: { order: index } }),
@@ -109,15 +174,17 @@ export class TodosService {
   async remove(userId: string, todoId: string) {
     const todo = await this.prisma.todo.findUnique({ where: { id: todoId } });
     if (!todo) throw new NotFoundException('To-do not found');
-    this.assertCanMutate(todo, userId);
+    await this.assertCanMutate(todo, userId);
     await this.prisma.todo.delete({ where: { id: todoId } });
     return { ok: true };
   }
 
-  private assertCanMutate(todo: any, userId: string) {
+  private async assertCanMutate(todo: any, userId: string): Promise<void> {
     if (todo.ownerUserId === userId || todo.createdById === userId) return;
     if (todo.groupId) {
-      // Will throw NotFound/Forbidden if not a member; acceptable here.
+      // Group to-do: the caller must be an active member of the owning group.
+      // requireMember throws NotFound when not a member.
+      await this.groups.requireMember(todo.groupId, userId);
       return;
     }
     throw new NotFoundException('To-do not found');

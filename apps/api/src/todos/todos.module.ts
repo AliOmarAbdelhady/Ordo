@@ -7,5 +7,6 @@ import { GroupsModule } from '../groups/groups.module';
   imports: [GroupsModule],
   controllers: [TodosController],
   providers: [TodosService],
+  exports: [TodosService],
 })
 export class TodosModule {}

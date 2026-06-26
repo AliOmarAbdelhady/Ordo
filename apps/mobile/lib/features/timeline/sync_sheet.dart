@@ -83,6 +83,7 @@ class _SyncSheet extends ConsumerStatefulWidget {
 class _SyncSheetState extends ConsumerState<_SyncSheet> {
   Map<String, String> _draft = {};
   bool _loaded = false;
+  String? _loadError;
 
   @override
   void initState() {
@@ -92,12 +93,21 @@ class _SyncSheetState extends ConsumerState<_SyncSheet> {
 
   Future<void> _load() async {
     final groups = widget.ref.read(groupsProvider).valueOrNull ?? [];
-    final syncs = await widget.ref.read(apiClientProvider).syncs(widget.blockId);
-    if (!mounted) return;
-    setState(() {
-      _draft = {for (final s in syncs) s.groupId: s.visibility};
-      _loaded = true;
-    });
+    try {
+      final syncs = await widget.ref.read(apiClientProvider).syncs(widget.blockId);
+      if (!mounted) return;
+      setState(() {
+        _draft = {for (final s in syncs) s.groupId: s.visibility};
+        _loaded = true;
+        _loadError = null;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _loadError = e.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadError = 'Could not load sync settings.');
+    }
     // ensure groups are loaded
     if (groups.isEmpty) widget.ref.invalidate(groupsProvider);
   }
@@ -143,7 +153,28 @@ class _SyncSheetState extends ConsumerState<_SyncSheet> {
               child: ListView(
                 shrinkWrap: true,
                 children: [
-                  if (!_loaded || groups.isEmpty)
+                  if (_loadError != null)
+                    Padding(
+                      padding: const EdgeInsets.all(OrdoSpacing.xl),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.error_outline, color: cs.error, size: 30),
+                          const SizedBox(height: OrdoSpacing.sm),
+                          Text(_loadError!, textAlign: TextAlign.center, style: TextStyle(color: cs.onSecondary)),
+                          const SizedBox(height: OrdoSpacing.md),
+                          OutlinedButton.icon(
+                            onPressed: () {
+                              setState(() => _loadError = null);
+                              _load();
+                            },
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (!_loaded || groups.isEmpty)
                     const Padding(padding: EdgeInsets.all(OrdoSpacing.xl), child: Center(child: CircularProgressIndicator()))
                   else
                     for (final g in groups)

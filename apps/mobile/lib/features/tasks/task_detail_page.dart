@@ -69,6 +69,7 @@ class _TaskBodyState extends ConsumerState<_TaskBody> {
     try {
       await ref.read(apiClientProvider).updateTask(widget.taskId, {'status': status});
       ref.invalidate(taskDetailProvider(widget.taskId));
+      _invalidateList();
     } on ApiException catch (e) {
       if (mounted) toast(context, e.message, error: true);
     } catch (_) {
@@ -92,10 +93,107 @@ class _TaskBodyState extends ConsumerState<_TaskBody> {
     try {
       await ref.read(apiClientProvider).updateTask(widget.taskId, {'dueAt': due.toUtc().toIso8601String()});
       ref.invalidate(taskDetailProvider(widget.taskId));
+      _invalidateList();
     } on ApiException catch (e) {
       if (mounted) toast(context, e.message, error: true);
     } catch (_) {
       if (mounted) toast(context, 'Could not update due date.', error: true);
+    }
+  }
+
+  /// Refresh the parent group's task list (All + Mine tabs) so the card reflects
+  /// the edit on back-navigation. Without this the mounted list shows stale data.
+  void _invalidateList() {
+    ref.invalidate(tasksProvider((groupId: widget.task.groupId, tab: 'all')));
+    ref.invalidate(tasksProvider((groupId: widget.task.groupId, tab: 'mine')));
+  }
+
+  Future<void> _editTask() async {
+    final titleCtrl = TextEditingController(text: widget.task.title);
+    final descCtrl = TextEditingController(text: widget.task.description ?? '');
+    String priority = widget.task.priority;
+    const priorities = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) => AlertDialog(
+          title: const Text('Edit task'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                  autofocus: true,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                const SizedBox(height: OrdoSpacing.sm),
+                TextField(
+                  controller: descCtrl,
+                  decoration: const InputDecoration(labelText: 'Description'),
+                  maxLines: 3,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                const SizedBox(height: OrdoSpacing.sm),
+                DropdownButton<String>(
+                  value: priority,
+                  isExpanded: true,
+                  items: priorities
+                      .map((p) => DropdownMenuItem(value: p, child: Text(p[0] + p.substring(1).toLowerCase())))
+                      .toList(),
+                  onChanged: (v) => setSt(() => priority = v ?? priority),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+    final newTitle = titleCtrl.text.trim();
+    if (newTitle.isEmpty) {
+      if (mounted) toast(context, 'Title cannot be empty', error: true);
+      return;
+    }
+    try {
+      await ref.read(apiClientProvider).updateTask(widget.taskId, {
+        'title': newTitle,
+        'description': descCtrl.text.trim(),
+        'priority': priority,
+      });
+      ref.invalidate(taskDetailProvider(widget.taskId));
+      _invalidateList();
+    } on ApiException catch (e) {
+      if (mounted) toast(context, e.message, error: true);
+    } catch (_) {
+      if (mounted) toast(context, 'Could not save edits.', error: true);
+    }
+  }
+
+  Future<void> _deleteTask() async {
+    final ok = await confirm(
+      context,
+      title: 'Delete task?',
+      message: 'This task and its comments will be permanently removed.',
+      confirmText: 'Delete',
+      danger: true,
+    );
+    if (!ok) return;
+    try {
+      await ref.read(apiClientProvider).deleteTask(widget.taskId);
+      _invalidateList();
+      if (mounted) Navigator.of(context).pop();
+    } on ApiException catch (e) {
+      if (mounted) toast(context, e.message, error: true);
+    } catch (_) {
+      if (mounted) toast(context, 'Could not delete task.', error: true);
     }
   }
 
@@ -132,7 +230,18 @@ class _TaskBodyState extends ConsumerState<_TaskBody> {
             Expanded(
               child: Text(task.title, style: Theme.of(context).textTheme.headlineSmall),
             ),
-            Icon(Icons.edit_outlined, size: 20, color: cs.onSecondary),
+            IconButton(
+              icon: const Icon(Icons.edit_outlined, size: 20),
+              tooltip: 'Edit task',
+              onPressed: _editTask,
+              visualDensity: VisualDensity.compact,
+            ),
+            IconButton(
+              icon: Icon(Icons.delete_outline, size: 20, color: cs.error),
+              tooltip: 'Delete task',
+              onPressed: _deleteTask,
+              visualDensity: VisualDensity.compact,
+            ),
           ],
         ),
         const SizedBox(height: OrdoSpacing.md),

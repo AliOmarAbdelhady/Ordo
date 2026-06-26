@@ -21,6 +21,12 @@ export class TodosController {
     return this.todos.list(userId, groupId ?? null, tab);
   }
 
+  /** Cross-group "mine" view for the unified dashboard (personal + all groups). */
+  @Get('mine')
+  listMine(@CurrentUser('id') userId: string, @Query('tab') tab: TodoTab = 'today') {
+    return this.todos.listMine(userId, tab);
+  }
+
   @Patch('reorder')
   reorder(@CurrentUser('id') userId: string, @Body() dto: ReorderDto) {
     return this.todos.reorder(userId, dto.ids);

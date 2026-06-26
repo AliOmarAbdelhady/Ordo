@@ -1,8 +1,9 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { MessageType, MemberStatus } from '@prisma/client';
+import { MessageType, MemberStatus, NotificationType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GroupsService } from '../groups/groups.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateMessageDto, EditMessageDto } from './dto/chat.dto';
 
 export interface ChatMessageDto {
@@ -26,6 +27,7 @@ export class ChatService {
     private readonly prisma: PrismaService,
     private readonly groups: GroupsService,
     private readonly realtime: RealtimeGateway,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async list(userId: string, groupId: string, before?: string, limit = 40) {
@@ -116,7 +118,18 @@ export class ChatService {
     } else {
       await this.prisma.messageReaction.create({ data: { messageId, userId, emoji } });
     }
-    this.realtime.emitToGroup(message.groupId, 'chat:reaction', { messageId, emoji, userId, groupId: message.groupId });
+    // Re-fetch the full message and emit the authoritative ChatMessageDto so every
+    // viewer receives a consistent reactions snapshot (avoids client/server count
+    // drift). The client treats `chat:reaction` exactly like `chat:update`.
+    const refreshed = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: {
+        sender: { select: { id: true, name: true, avatarUrl: true } },
+        reactions: { select: { userId: true, emoji: true } },
+        replyTo: { include: { sender: { select: { name: true } } } },
+      },
+    });
+    if (refreshed) this.realtime.emitToGroup(message.groupId, 'chat:reaction', this.toDto(refreshed));
     return { ok: true };
   }
 
@@ -137,20 +150,16 @@ export class ChatService {
     });
     for (const m of members) {
       if (m.userId === senderId) continue;
-      await this.prisma.notification.create({
-        data: {
-          userId: m.userId,
-          type: 'MESSAGE_MENTION',
-          title: 'You were mentioned',
-          body: body.length > 120 ? body.slice(0, 120) + '…' : body,
-          data: { groupId, messageId },
-        },
-      });
-      this.realtime.emitToUser(m.userId, 'notification', {
-        type: 'MESSAGE_MENTION',
+      // Route through NotificationsService so the DB row AND the emitted socket
+      // event share the canonical shape ({id,type,title,body,data,createdAt}) —
+      // the bespoke emit below previously omitted id/createdAt and crashed the
+      // mobile OrdoNotification.fromJson parser.
+      await this.notifications.create({
+        userId: m.userId,
+        type: NotificationType.MESSAGE_MENTION,
         title: 'You were mentioned',
         body: body.length > 120 ? body.slice(0, 120) + '…' : body,
-        groupId,
+        data: { groupId, messageId },
       });
     }
   }

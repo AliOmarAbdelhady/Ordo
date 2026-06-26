@@ -13,6 +13,15 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { TasksModule } from './tasks/tasks.module';
 import { TodosModule } from './todos/todos.module';
 import { RemindersModule } from './reminders/reminders.module';
+import { SearchModule } from './search/search.module';
+import { PollsModule } from './polls/polls.module';
+import { AnnouncementsModule } from './announcements/announcements.module';
+import { InboxModule } from './inbox/inbox.module';
+import { MediaModule } from './media/media.module';
+import { LocationModule } from './location/location.module';
+import { AiModule } from './ai/ai.module';
+import { CategoriesModule } from './categories/categories.module';
+import { EventsModule } from './events/events.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 
 @Module({
@@ -30,6 +39,15 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
     TasksModule,
     TodosModule,
     RemindersModule,
+    SearchModule,
+    PollsModule,
+    AnnouncementsModule,
+    InboxModule,
+    MediaModule,
+    LocationModule,
+    AiModule,
+    CategoriesModule,
+    EventsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],
 })

@@ -8,5 +8,6 @@ import { NotificationsModule } from '../notifications/notifications.module';
   imports: [GroupsModule, NotificationsModule],
   controllers: [TasksController],
   providers: [TasksService],
+  exports: [TasksService],
 })
 export class TasksModule {}

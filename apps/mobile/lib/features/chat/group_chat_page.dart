@@ -28,6 +28,8 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage> {
 
   List<ChatMessage> _messages = [];
   bool _loading = true;
+  bool _hasMore = false;
+  bool _isLoadingMore = false;
   String? _loadError;
 
   /// Message currently being replied to (preview above composer).
@@ -48,6 +50,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage> {
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_onScroll);
     _load();
     _subscribeRealtime();
     WidgetsBinding.instance.addPostFrameCallback((_) => _markRead());
@@ -70,6 +73,7 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage> {
       if (!mounted) return;
       setState(() {
         _messages = res.messages;
+        _hasMore = res.hasMore;
         _loading = false;
       });
       _jumpToBottom();
@@ -85,6 +89,42 @@ class _GroupChatPageState extends ConsumerState<GroupChatPage> {
         _loadError = 'Could not load messages.';
         _loading = false;
       });
+    }
+  }
+
+  void _onScroll() {
+    if (!_scroll.hasClients || _isLoadingMore || _loading || !_hasMore) return;
+    final pos = _scroll.position;
+    // Not reversed: oldest at top. Load older history when scrolled near the top.
+    if (pos.pixels <= pos.minScrollExtent + 240) _loadMore();
+  }
+
+  Future<void> _loadMore() async {
+    if (_messages.isEmpty) return;
+    setState(() => _isLoadingMore = true);
+    final prevMax = _scroll.hasClients ? _scroll.position.maxScrollExtent : 0.0;
+    try {
+      // Use the oldest visible message's createdAt as the 'before' cursor.
+      final res = await ref
+          .read(apiClientProvider)
+          .messages(widget.groupId, before: _messages.first.createdAt, limit: 40);
+      if (!mounted) return;
+      setState(() {
+        final existing = _messages.map((m) => m.id).toSet();
+        final older = res.messages.where((m) => !existing.contains(m.id)).toList();
+        _messages = [...older, ..._messages];
+        _hasMore = res.hasMore && older.isNotEmpty;
+      });
+      // The list grew upward; keep the viewport steady by jumping down by the delta.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scroll.hasClients) return;
+        final delta = _scroll.position.maxScrollExtent - prevMax;
+        if (delta > 0) _scroll.jumpTo(_scroll.position.pixels + delta);
+      });
+    } catch (_) {
+      // best-effort; keep the messages already loaded.
+    } finally {
+      if (mounted) setState(() => _isLoadingMore = false);
     }
   }
 

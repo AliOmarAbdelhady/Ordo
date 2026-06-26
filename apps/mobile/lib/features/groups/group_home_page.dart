@@ -172,7 +172,15 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
               title: const Text('Settings'),
               onTap: () {
                 Navigator.pop(ctx);
-                toast(context, 'Coming soon');
+                context.push('/groups/$_gid/settings');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.apps_outlined),
+              title: const Text('More (polls, files, location, AI)'),
+              onTap: () {
+                Navigator.pop(ctx);
+                context.push('/groups/$_gid/more');
               },
             ),
             const Divider(height: 1),
@@ -1184,13 +1192,13 @@ class _CreateTaskSheetState extends ConsumerState<_CreateTaskSheet> {
                         for (final m in widget.group.members)
                           FilterChip(
                             label: Text(m.name),
-                            selected: _assigneeIds.contains(m.id),
+                            selected: _assigneeIds.contains(m.userId),
                             avatar: OAvatar(name: m.name, imageUrl: m.avatarUrl, radius: 12),
                             onSelected: (sel) => setState(() {
                               if (sel) {
-                                _assigneeIds.add(m.id);
+                                _assigneeIds.add(m.userId);
                               } else {
-                                _assigneeIds.remove(m.id);
+                                _assigneeIds.remove(m.userId);
                               }
                             }),
                           ),
@@ -1349,7 +1357,12 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
                           }
                         },
                         itemBuilder: (_) => [
-                          const PopupMenuItem(value: 'role', child: Text('Change role')),
+                          // MEMBER_ROLE_UPDATE is OWNER-only server-side; hide the
+                          // option from ADMINs so they're never offered an action
+                          // that would 403. (MEMBER_REMOVE is ADMIN-level, so the
+                          // menu still shows to ADMINs for Remove.)
+                          if (widget.group.role == 'OWNER')
+                            const PopupMenuItem(value: 'role', child: Text('Change role')),
                           PopupMenuItem(
                             value: 'remove',
                             child: Text('Remove', style: TextStyle(color: cs.error)),

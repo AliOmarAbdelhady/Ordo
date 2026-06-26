@@ -93,11 +93,12 @@ class _CreateGroupPageState extends ConsumerState<CreateGroupPage> {
           'chat': _modules['chat'] ?? false,
           'files': _modules['files'] ?? false,
           'location': _modules['location'] ?? false,
-          'members': true,
           'announcements': _modules['announcements'] ?? false,
-          'polls': false,
           'media': _modules['media'] ?? false,
           'availability': _modules['availability'] ?? false,
+          // 'members' and 'polls' are intentionally omitted so the template
+          // default survives (members is always-on server-side; e.g. the Friends
+          // template enables polls, which the old hardcoded false clobbered).
         },
       };
       final group = await ref.read(apiClientProvider).createGroup(body);

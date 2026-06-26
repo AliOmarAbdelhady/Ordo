@@ -20,6 +20,8 @@ export interface TaskDto {
   createdBy: { id: string; name: string; avatarUrl: string | null };
   assignees: { id: string; name: string; avatarUrl: string | null }[];
   commentCount: number;
+  /** Only populated by the cross-group "mine" view (provenance). */
+  group?: { id: string; name: string; accentColor: string } | null;
 }
 
 @Injectable()
@@ -88,6 +90,33 @@ export class TasksService {
       include: this.include(),
       orderBy: [{ status: 'asc' }, { dueAt: { nulls: 'first', sort: 'asc' } }, { createdAt: 'desc' }],
       take: 100,
+    });
+    return { tasks: tasks.map((t) => this.toDto(t)) };
+  }
+
+  /**
+   * Cross-group "mine" view for the unified dashboard: every task assigned to
+   * the user across all groups they belong to, each enriched with the owning
+   * group's name/accent so the dashboard can show provenance. Membership is the
+   * authorization gate — only tasks in groups the user is an active member of
+   * are returned.
+   */
+  async listMine(userId: string) {
+    const memberships = await this.prisma.groupMember.findMany({
+      where: { userId, status: MemberStatus.ACTIVE },
+      select: { groupId: true },
+    });
+    const groupIds = memberships.map((m) => m.groupId);
+    if (!groupIds.length) return { tasks: [] };
+
+    const tasks = await this.prisma.task.findMany({
+      where: { groupId: { in: groupIds }, deletedAt: null, assignees: { some: { userId } } },
+      include: {
+        ...this.include(),
+        group: { select: { id: true, name: true, accentColor: true } },
+      },
+      orderBy: [{ status: 'asc' }, { dueAt: { nulls: 'first', sort: 'asc' } }, { createdAt: 'desc' }],
+      take: 200,
     });
     return { tasks: tasks.map((t) => this.toDto(t)) };
   }
@@ -219,6 +248,7 @@ export class TasksService {
       createdBy: t.createdBy,
       assignees: (t.assignees ?? []).map((a: any) => a.user),
       commentCount: t._count?.comments ?? 0,
+      ...(t.group ? { group: { id: t.group.id, name: t.group.name, accentColor: t.group.accentColor } } : {}),
     };
   }
 }

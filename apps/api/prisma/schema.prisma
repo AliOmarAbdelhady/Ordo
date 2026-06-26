@@ -64,6 +64,14 @@ enum BlockSource {
   AI
 }
 
+// Location sharing is opt-in and group-specific.
+enum LocationMode {
+  OFF
+  APPROXIMATE
+  PRECISE_TEMPORARY
+  PRECISE_ALWAYS_WHILE_ENABLED
+}
+
 enum TaskStatus {
   TODO
   IN_PROGRESS
@@ -107,6 +115,9 @@ enum NotificationType {
   EVENT_SOON
   CHAT
   SYSTEM
+  DM
+  POLL_CREATED
+  ANNOUNCEMENT
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,30 +125,30 @@ enum NotificationType {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model User {
-  id              String    @id @default(uuid())
-  email           String    @unique
-  phone           String?   @unique
-  passwordHash    String
-  name            String
-  username        String    @unique
-  avatarUrl       String?
-  bio             String?
-  timezone        String    @default("UTC")
-  theme           String    @default("system") // light | dark | system
-  accentColor     String    @default("blue")
-  emailVerified   Boolean   @default(false)
-  phoneVerified   Boolean   @default(false)
-  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
-  deletedAt       DateTime? @db.Timestamptz(3)
+  id            String    @id @default(uuid())
+  email         String    @unique
+  phone         String?   @unique
+  passwordHash  String
+  name          String
+  username      String    @unique
+  avatarUrl     String?
+  bio           String?
+  timezone      String    @default("UTC")
+  theme         String    @default("system") // light | dark | system
+  accentColor   String    @default("blue")
+  emailVerified Boolean   @default(false)
+  phoneVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt     DateTime? @db.Timestamptz(3)
 
   sessions          Session[]
   memberships       GroupMember[]
-  groupsCreated     Group[]              @relation("GroupCreatedBy")
-  ownedBlocks       TimelineBlock[]      @relation("BlockOwner")
-  blocksCreated     TimelineBlock[]      @relation("BlockCreatedBy")
+  groupsCreated     Group[]                  @relation("GroupCreatedBy")
+  ownedBlocks       TimelineBlock[]          @relation("BlockOwner")
+  blocksCreated     TimelineBlock[]          @relation("BlockCreatedBy")
   syncs             TimelineBlockSync[]
-  tasksCreated      Task[]               @relation("TaskCreatedBy")
+  tasksCreated      Task[]                   @relation("TaskCreatedBy")
   taskAssignments   TaskAssignee[]
   taskComments      TaskComment[]
   todos             Todo[]
@@ -148,19 +159,27 @@ model User {
   reminders         Reminder[]
   availabilityPrefs AvailabilityPreferences?
   categories        TimelineCategory[]
+  pollsCreated      Poll[]                   @relation("PollCreatedBy")
+  pollVotes         PollVote[]               @relation("PollVotes")
+  announcements     Announcement[]           @relation("AnnouncementCreatedBy")
+  dmMemberships     DmMember[]               @relation("DmMembers")
+  dmMessages        DmMessage[]              @relation("DmMessages")
+  mediaUploaded     MediaFile[]              @relation("MediaUploader")
+  locationShares    LocationShare[]          @relation("LocationShares")
+  aiActions         AiAction[]               @relation("AiActions")
 
   @@map("users")
 }
 
 model Session {
-  id              String    @id @default(uuid())
-  userId          String
+  id               String    @id @default(uuid())
+  userId           String
   refreshTokenHash String
-  userAgent       String?
-  ip              String?
-  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
-  expiresAt       DateTime  @db.Timestamptz(3)
-  revokedAt       DateTime? @db.Timestamptz(3)
+  userAgent        String?
+  ip               String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt        DateTime  @db.Timestamptz(3)
+  revokedAt        DateTime? @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -185,29 +204,33 @@ model Group {
   createdAt   DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
 
-  createdBy    User            @relation("GroupCreatedBy", fields: [createdById], references: [id])
-  members      GroupMember[]
-  invites      GroupInvite[]
-  blocks       TimelineBlock[]
-  blockSyncs   TimelineBlockSync[]
-  tasks        Task[]
-  messages     Message[]
-  categories   TimelineCategory[]
+  createdBy      User                @relation("GroupCreatedBy", fields: [createdById], references: [id])
+  members        GroupMember[]
+  invites        GroupInvite[]
+  blocks         TimelineBlock[]
+  blockSyncs     TimelineBlockSync[]
+  tasks          Task[]
+  messages       Message[]
+  categories     TimelineCategory[]
+  polls          Poll[]
+  announcements  Announcement[]
+  media          MediaFile[]
+  locationShares LocationShare[]
 
   @@index([createdById])
   @@map("groups")
 }
 
 model GroupMember {
-  id        String       @id @default(uuid())
-  groupId   String
-  userId    String
-  role        GroupRole    @default(MEMBER)
-  status      MemberStatus @default(ACTIVE)
-  joinedAt    DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
-  lastReadAt  DateTime?    @db.Timestamptz(3)
-  pinned      Boolean      @default(false)
+  id         String       @id @default(uuid())
+  groupId    String
+  userId     String
+  role       GroupRole    @default(MEMBER)
+  status     MemberStatus @default(ACTIVE)
+  joinedAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime     @updatedAt @db.Timestamptz(3)
+  lastReadAt DateTime?    @db.Timestamptz(3)
+  pinned     Boolean      @default(false)
 
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -237,11 +260,11 @@ model GroupInvite {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model TimelineCategory {
-  id       String  @id @default(uuid())
-  name     String
-  color    String  @default("#2563EB")
-  userId   String?
-  groupId  String?
+  id      String  @id @default(uuid())
+  name    String
+  color   String  @default("#2563EB")
+  userId  String?
+  groupId String?
 
   user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
   group Group? @relation(fields: [groupId], references: [id], onDelete: Cascade)
@@ -250,35 +273,35 @@ model TimelineCategory {
 }
 
 model TimelineBlock {
-  id                  String           @id @default(uuid())
+  id                    String           @id @default(uuid())
   // A self-space block sets ownerUserId + null groupId.
   // A group-space block sets groupId + null ownerUserId.
-  ownerUserId         String?
-  groupId             String?
-  title               String
-  description         String?
-  startTime           DateTime         @db.Timestamptz(3)
-  endTime             DateTime         @db.Timestamptz(3)
-  timezone            String           @default("UTC")
-  visibility          Visibility       @default(PRIVATE)
-  flexibility         BlockFlexibility @default(FIXED)
-  source              BlockSource      @default(SELF)
-  color               String           @default("#2563EB")
-  location            String?
-  recurrenceRule      String? // RFC-5545-ish RRULE (FREQ=DAILY;BYDAY=MO,WE)
+  ownerUserId           String?
+  groupId               String?
+  title                 String
+  description           String?
+  startTime             DateTime         @db.Timestamptz(3)
+  endTime               DateTime         @db.Timestamptz(3)
+  timezone              String           @default("UTC")
+  visibility            Visibility       @default(PRIVATE)
+  flexibility           BlockFlexibility @default(FIXED)
+  source                BlockSource      @default(SELF)
+  color                 String           @default("#2563EB")
+  location              String?
+  recurrenceRule        String? // RFC-5545-ish RRULE (FREQ=DAILY;BYDAY=MO,WE)
   reminderMinutesBefore Int?
-  isEvent             Boolean          @default(false)
-  allDay              Boolean          @default(false)
-  createdById         String
-  createdAt           DateTime         @default(now()) @db.Timestamptz(3)
-  updatedAt           DateTime         @updatedAt @db.Timestamptz(3)
-  deletedAt           DateTime?        @db.Timestamptz(3)
+  isEvent               Boolean          @default(false)
+  allDay                Boolean          @default(false)
+  createdById           String
+  createdAt             DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime         @updatedAt @db.Timestamptz(3)
+  deletedAt             DateTime?        @db.Timestamptz(3)
 
-  ownerUser   User?                @relation("BlockOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  createdBy   User                 @relation("BlockCreatedBy", fields: [createdById], references: [id])
-  group       Group?               @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  syncs       TimelineBlockSync[]
-  attendees   EventAttendee[]
+  ownerUser User?               @relation("BlockOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  createdBy User                @relation("BlockCreatedBy", fields: [createdById], references: [id])
+  group     Group?              @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  syncs     TimelineBlockSync[]
+  attendees EventAttendee[]
 
   @@index([ownerUserId, startTime, endTime])
   @@index([groupId, startTime, endTime])
@@ -295,8 +318,8 @@ model TimelineBlockSync {
   createdAt       DateTime   @default(now()) @db.Timestamptz(3)
 
   block TimelineBlock @relation(fields: [timelineBlockId], references: [id], onDelete: Cascade)
-  group Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  user User            @relation(fields: [syncedById], references: [id])
+  group Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User          @relation(fields: [syncedById], references: [id])
 
   @@unique([timelineBlockId, groupId])
   @@map("timeline_block_syncs")
@@ -309,7 +332,7 @@ model EventAttendee {
   status  RsvpStatus @default(GOING)
 
   block TimelineBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
-  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([blockId, userId])
   @@map("event_attendees")
@@ -397,22 +420,22 @@ model Todo {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Message {
-  id         String      @id @default(uuid())
-  groupId    String
-  senderId   String
-  body       String?
-  type       MessageType @default(TEXT)
-  replyToId  String?
-  metadata   Json        @default("{}")
-  createdAt  DateTime    @default(now()) @db.Timestamptz(3)
-  editedAt   DateTime?   @db.Timestamptz(3)
-  deletedAt  DateTime?   @db.Timestamptz(3)
+  id        String      @id @default(uuid())
+  groupId   String
+  senderId  String
+  body      String?
+  type      MessageType @default(TEXT)
+  replyToId String?
+  metadata  Json        @default("{}")
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+  editedAt  DateTime?   @db.Timestamptz(3)
+  deletedAt DateTime?   @db.Timestamptz(3)
 
-  group      Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  sender     User             @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  replyTo    Message?         @relation("MessageReply", fields: [replyToId], references: [id])
-  replies    Message[]        @relation("MessageReply")
-  reactions  MessageReaction[]
+  group     Group             @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  sender    User              @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo   Message?          @relation("MessageReply", fields: [replyToId], references: [id])
+  replies   Message[]         @relation("MessageReply")
+  reactions MessageReaction[]
 
   @@index([groupId, createdAt])
   @@map("messages")
@@ -483,4 +506,223 @@ model Reminder {
   @@index([status, remindAt])
   @@index([userId])
   @@map("reminders")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verification codes (OTP for phone/email signup, login, reset)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model VerificationCode {
+  id         String    @id @default(uuid())
+  userId     String? // set when verifying an existing account
+  target     String // phone | email
+  value      String // the phone number or email being verified
+  codeHash   String
+  purpose    String // signup | login | reset | verify_phone | verify_email
+  attempts   Int       @default(0)
+  expiresAt  DateTime  @db.Timestamptz(3)
+  consumedAt DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([value, purpose])
+  @@map("verification_codes")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Polls
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Poll {
+  id          String    @id @default(uuid())
+  groupId     String
+  createdById String
+  question    String
+  multiple    Boolean   @default(false)
+  closesAt    DateTime? @db.Timestamptz(3)
+  closed      Boolean   @default(false)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  group     Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("PollCreatedBy", fields: [createdById], references: [id])
+  options   PollOption[]
+  votes     PollVote[]
+
+  @@index([groupId, createdAt])
+  @@map("polls")
+}
+
+model PollOption {
+  id     String @id @default(uuid())
+  pollId String
+  text   String
+  order  Int    @default(0)
+
+  poll  Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes PollVote[]
+
+  @@index([pollId])
+  @@map("poll_options")
+}
+
+model PollVote {
+  id        String   @id @default(uuid())
+  pollId    String
+  optionId  String
+  userId    String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user   User       @relation("PollVotes", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, userId])
+  @@index([pollId, userId])
+  @@map("poll_votes")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Announcements (group broadcast, optionally pinned)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Announcement {
+  id          String   @id @default(uuid())
+  groupId     String
+  createdById String
+  title       String
+  body        String
+  pinned      Boolean  @default(false)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  group     Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User  @relation("AnnouncementCreatedBy", fields: [createdById], references: [id])
+
+  @@index([groupId, createdAt])
+  @@map("announcements")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Direct messages (1:1 inbox threads)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model DmThread {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  members  DmMember[]
+  messages DmMessage[]
+
+  @@map("dm_threads")
+}
+
+model DmMember {
+  id         String    @id @default(uuid())
+  threadId   String
+  userId     String
+  lastReadAt DateTime? @db.Timestamptz(3)
+  hiddenAt   DateTime? @db.Timestamptz(3)
+
+  thread DmThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user   User     @relation("DmMembers", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, userId])
+  @@index([userId])
+  @@map("dm_members")
+}
+
+model DmMessage {
+  id        String   @id @default(uuid())
+  threadId  String
+  senderId  String
+  body      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  thread DmThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sender User     @relation("DmMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+  @@map("dm_messages")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Media / files (local disk storage for the MVP; S3-compatible path is documented)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MediaFile {
+  id         String   @id @default(uuid())
+  groupId    String?
+  uploaderId String
+  filename   String
+  mimeType   String
+  sizeBytes  Int
+  storageKey String // relative path under the uploads root
+  url        String // served URL
+  width      Int?
+  height     Int?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  group    Group? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  uploader User   @relation("MediaUploader", fields: [uploaderId], references: [id])
+
+  @@index([groupId, createdAt])
+  @@index([uploaderId])
+  @@map("media_files")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Location sharing (opt-in, group-specific). lat/lng floats — no PostGIS for MVP.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model LocationShare {
+  id        String       @id @default(uuid())
+  userId    String
+  groupId   String
+  mode      LocationMode @default(OFF)
+  expiresAt DateTime?    @db.Timestamptz(3)
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
+
+  user   User            @relation("LocationShares", fields: [userId], references: [id], onDelete: Cascade)
+  group  Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  points LocationPoint[]
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+  @@map("location_shares")
+}
+
+model LocationPoint {
+  id        String   @id @default(uuid())
+  shareId   String
+  lat       Float
+  lng       Float
+  accuracy  Float?
+  heading   Float?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  share LocationShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+
+  @@index([shareId, createdAt])
+  @@map("location_points")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI actions (audit trail of AI proposals — never auto-commit)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AiAction {
+  id        String   @id @default(uuid())
+  userId    String
+  intent    String // CREATE_EVENT | CREATE_TASK | CREATE_TODO | REMINDER | SUMMARY
+  input     Json
+  output    Json
+  applied   Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation("AiActions", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("ai_actions")
 }

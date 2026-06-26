@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/api.dart';
 import '../../core/app_theme.dart';
 import '../../core/auth_controller.dart';
 import '../../core/settings.dart';
@@ -141,7 +144,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 _ActionTile(
                   icon: Icons.download_outlined,
                   title: 'Export my data',
-                  onTap: () => toast(context, 'Data export is coming soon.'),
+                  onTap: () => _exportData(context, ref),
                 ),
               ],
             ),
@@ -165,7 +168,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   icon: Icons.delete_forever_outlined,
                   title: 'Delete account',
                   color: Theme.of(context).colorScheme.error,
-                  onTap: () => _deleteAccount(context),
+                  onTap: () => _deleteAccount(context, ref),
                 ),
               ],
             ),
@@ -194,17 +197,40 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
-  Future<void> _deleteAccount(BuildContext context) async {
+  Future<void> _exportData(BuildContext context, WidgetRef ref) async {
+    toast(context, 'Preparing your data…');
+    try {
+      final data = await ref.read(apiClientProvider).exportData();
+      if (!context.mounted) return;
+      final encoded = const JsonEncoder.withIndent('  ').convert(data);
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Your data'),
+          content: SizedBox(width: double.maxFinite, child: SingleChildScrollView(child: SelectableText(encoded, style: const TextStyle(fontSize: 12)))),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+        ),
+      );
+    } on ApiException catch (e) {
+      if (context.mounted) toast(context, e.message, error: true);
+    }
+  }
+
+  Future<void> _deleteAccount(BuildContext context, WidgetRef ref) async {
     final ok = await confirm(
       context,
       title: 'Delete account?',
-      message:
-          'Account deletion is not available in this build. Contact support to remove your data.',
-      confirmText: 'Got it',
+      message: 'This permanently soft-deletes your account and revokes all sessions. This cannot be undone.',
+      confirmText: 'Delete',
       danger: true,
     );
-    if (ok && context.mounted) {
-      toast(context, 'Account deletion is not implemented in this build.');
+    if (!ok) return;
+    try {
+      await ref.read(apiClientProvider).deleteAccount();
+      await ref.read(authControllerProvider.notifier).logout();
+      if (context.mounted) toast(context, 'Account deleted');
+    } on ApiException catch (e) {
+      if (context.mounted) toast(context, e.message, error: true);
     }
   }
 }

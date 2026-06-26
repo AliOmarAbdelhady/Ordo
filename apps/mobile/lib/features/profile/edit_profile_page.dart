@@ -172,8 +172,10 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
               validator: (v) {
                 final t = v?.trim() ?? '';
                 if (t.isEmpty) return 'Enter a username';
-                if (!RegExp(r'^[A-Za-z0-9_]{3,20}$').hasMatch(t)) {
-                  return '3-20 letters, numbers, or underscores';
+                // Must match the backend DTO (@Matches /^[a-z0-9_]{3,20}$/) —
+                // lowercase only, otherwise the server 400s after submit.
+                if (!RegExp(r'^[a-z0-9_]{3,20}$').hasMatch(t)) {
+                  return '3-20 lowercase letters, numbers, or underscores';
                 }
                 return null;
               },
