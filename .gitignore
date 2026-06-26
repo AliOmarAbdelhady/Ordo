@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next.js
+.next/
+out/
+build/
+dist/
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# prisma
+apps/api/prisma/migrations/**/migration.sql.backup
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# uploads (local dev)
+uploads/
+
+# coverage
+coverage/
+
+# screenshots (dev artifacts)
+*.png
+!docs/**/*.png

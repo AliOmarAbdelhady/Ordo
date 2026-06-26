@@ -1,0 +1,19 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    public_member_api_docs: false
+    prefer_single_quotes: true
+    avoid_print: false
+    use_super_parameters: false
+    require_trailing_commas: false
+    lines_longer_than_80_chars: false
+    avoid_redundant_argument_values: false
+    constant_identifier_names: false
+
+analyzer:
+  errors:
+    invalid_annotation_target: ignore
+  exclude:
+    - '**/*.g.dart'
+    - '**/*.freezed.dart'

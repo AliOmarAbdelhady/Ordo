@@ -1,0 +1,486 @@
+// Ordo — Prisma schema (time-first group coordination)
+// All timestamps are stored as timestamptz (UTC). The app converts to the
+// user's timezone for display only.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum GroupType {
+  FAMILY
+  FRIENDS
+  UNIVERSITY
+  GYM
+  SPORTS
+  WORK
+  PROJECT
+  TRAVEL
+  CUSTOM
+}
+
+enum GroupRole {
+  OWNER
+  ADMIN
+  MODERATOR
+  MEMBER
+  GUEST
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  LEFT
+  REMOVED
+}
+
+// Timeline visibility is the core privacy primitive.
+enum Visibility {
+  PRIVATE
+  BUSY_ONLY
+  TITLE_ONLY
+  FULL
+}
+
+enum BlockFlexibility {
+  FIXED
+  FLEXIBLE
+  TENTATIVE
+}
+
+enum BlockSource {
+  SELF
+  GROUP
+  SYNC
+  GOOGLE
+  AI
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  MEDIA
+}
+
+enum RsvpStatus {
+  GOING
+  MAYBE
+  NOT_GOING
+}
+
+enum ReminderStatus {
+  SCHEDULED
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_DUE
+  REMINDER
+  MESSAGE_MENTION
+  GROUP_INVITE
+  EVENT_SOON
+  CHAT
+  SYSTEM
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Users, sessions
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  phone           String?   @unique
+  passwordHash    String
+  name            String
+  username        String    @unique
+  avatarUrl       String?
+  bio             String?
+  timezone        String    @default("UTC")
+  theme           String    @default("system") // light | dark | system
+  accentColor     String    @default("blue")
+  emailVerified   Boolean   @default(false)
+  phoneVerified   Boolean   @default(false)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt       DateTime? @db.Timestamptz(3)
+
+  sessions          Session[]
+  memberships       GroupMember[]
+  groupsCreated     Group[]              @relation("GroupCreatedBy")
+  ownedBlocks       TimelineBlock[]      @relation("BlockOwner")
+  blocksCreated     TimelineBlock[]      @relation("BlockCreatedBy")
+  syncs             TimelineBlockSync[]
+  tasksCreated      Task[]               @relation("TaskCreatedBy")
+  taskAssignments   TaskAssignee[]
+  taskComments      TaskComment[]
+  todos             Todo[]
+  messages          Message[]
+  reactions         MessageReaction[]
+  rsvps             EventAttendee[]
+  notifications     Notification[]
+  reminders         Reminder[]
+  availabilityPrefs AvailabilityPreferences?
+  categories        TimelineCategory[]
+
+  @@map("users")
+}
+
+model Session {
+  id              String    @id @default(uuid())
+  userId          String
+  refreshTokenHash String
+  userAgent       String?
+  ip              String?
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt       DateTime  @db.Timestamptz(3)
+  revokedAt       DateTime? @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Groups + membership
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Group {
+  id          String    @id @default(uuid())
+  name        String
+  type        GroupType @default(CUSTOM)
+  description String?
+  avatarUrl   String?
+  accentColor String    @default("blue")
+  // Enabled modules + privacy/task/location defaults live here.
+  settings    Json      @default("{}")
+  createdById String
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  createdBy    User            @relation("GroupCreatedBy", fields: [createdById], references: [id])
+  members      GroupMember[]
+  invites      GroupInvite[]
+  blocks       TimelineBlock[]
+  blockSyncs   TimelineBlockSync[]
+  tasks        Task[]
+  messages     Message[]
+  categories   TimelineCategory[]
+
+  @@index([createdById])
+  @@map("groups")
+}
+
+model GroupMember {
+  id        String       @id @default(uuid())
+  groupId   String
+  userId    String
+  role        GroupRole    @default(MEMBER)
+  status      MemberStatus @default(ACTIVE)
+  joinedAt    DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+  lastReadAt  DateTime?    @db.Timestamptz(3)
+  pinned      Boolean      @default(false)
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@map("group_members")
+}
+
+model GroupInvite {
+  id        String    @id @default(uuid())
+  groupId   String
+  code      String    @unique @default(uuid())
+  createdBy String
+  maxUses   Int       @default(0)
+  uses      Int       @default(0)
+  expiresAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@map("group_invites")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TimelineCategory {
+  id       String  @id @default(uuid())
+  name     String
+  color    String  @default("#2563EB")
+  userId   String?
+  groupId  String?
+
+  user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@map("timeline_categories")
+}
+
+model TimelineBlock {
+  id                  String           @id @default(uuid())
+  // A self-space block sets ownerUserId + null groupId.
+  // A group-space block sets groupId + null ownerUserId.
+  ownerUserId         String?
+  groupId             String?
+  title               String
+  description         String?
+  startTime           DateTime         @db.Timestamptz(3)
+  endTime             DateTime         @db.Timestamptz(3)
+  timezone            String           @default("UTC")
+  visibility          Visibility       @default(PRIVATE)
+  flexibility         BlockFlexibility @default(FIXED)
+  source              BlockSource      @default(SELF)
+  color               String           @default("#2563EB")
+  location            String?
+  recurrenceRule      String? // RFC-5545-ish RRULE (FREQ=DAILY;BYDAY=MO,WE)
+  reminderMinutesBefore Int?
+  isEvent             Boolean          @default(false)
+  allDay              Boolean          @default(false)
+  createdById         String
+  createdAt           DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime         @updatedAt @db.Timestamptz(3)
+  deletedAt           DateTime?        @db.Timestamptz(3)
+
+  ownerUser   User?                @relation("BlockOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  createdBy   User                 @relation("BlockCreatedBy", fields: [createdById], references: [id])
+  group       Group?               @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  syncs       TimelineBlockSync[]
+  attendees   EventAttendee[]
+
+  @@index([ownerUserId, startTime, endTime])
+  @@index([groupId, startTime, endTime])
+  @@index([visibility])
+  @@map("timeline_blocks")
+}
+
+model TimelineBlockSync {
+  id              String     @id @default(uuid())
+  timelineBlockId String
+  groupId         String
+  visibility      Visibility @default(BUSY_ONLY)
+  syncedById      String
+  createdAt       DateTime   @default(now()) @db.Timestamptz(3)
+
+  block TimelineBlock @relation(fields: [timelineBlockId], references: [id], onDelete: Cascade)
+  group Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user User            @relation(fields: [syncedById], references: [id])
+
+  @@unique([timelineBlockId, groupId])
+  @@map("timeline_block_syncs")
+}
+
+model EventAttendee {
+  id      String     @id @default(uuid())
+  blockId String
+  userId  String
+  status  RsvpStatus @default(GOING)
+
+  block TimelineBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([blockId, userId])
+  @@map("event_attendees")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tasks + To-dos
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Task {
+  id          String       @id @default(uuid())
+  groupId     String
+  createdById String
+  title       String
+  description String?
+  status      TaskStatus   @default(TODO)
+  priority    TaskPriority @default(MEDIUM)
+  dueAt       DateTime?    @db.Timestamptz(3)
+  reminderAt  DateTime?    @db.Timestamptz(3)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime?    @db.Timestamptz(3)
+
+  group     Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User           @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  assignees TaskAssignee[]
+  comments  TaskComment[]
+
+  @@index([groupId, status])
+  @@index([dueAt])
+  @@map("tasks")
+}
+
+model TaskAssignee {
+  id     String @id @default(uuid())
+  taskId String
+  userId String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@map("task_assignees")
+}
+
+model TaskComment {
+  id        String   @id @default(uuid())
+  taskId    String
+  userId    String
+  body      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("task_comments")
+}
+
+model Todo {
+  id          String    @id @default(uuid())
+  ownerUserId String?
+  groupId     String?
+  title       String
+  note        String?
+  done        Boolean   @default(false)
+  dueAt       DateTime? @db.Timestamptz(3)
+  order       Int       @default(0)
+  labels      String[]  @default([])
+  reminderAt  DateTime? @db.Timestamptz(3)
+  createdById String
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@index([ownerUserId, order])
+  @@index([groupId])
+  @@map("todos")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Message {
+  id         String      @id @default(uuid())
+  groupId    String
+  senderId   String
+  body       String?
+  type       MessageType @default(TEXT)
+  replyToId  String?
+  metadata   Json        @default("{}")
+  createdAt  DateTime    @default(now()) @db.Timestamptz(3)
+  editedAt   DateTime?   @db.Timestamptz(3)
+  deletedAt  DateTime?   @db.Timestamptz(3)
+
+  group      Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  sender     User             @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo    Message?         @relation("MessageReply", fields: [replyToId], references: [id])
+  replies    Message[]        @relation("MessageReply")
+  reactions  MessageReaction[]
+
+  @@index([groupId, createdAt])
+  @@map("messages")
+}
+
+model MessageReaction {
+  id        String @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@map("message_reactions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Availability, notifications, reminders
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AvailabilityPreferences {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  timezone   String   @default("UTC")
+  workStart  String   @default("09:00") // local HH:mm
+  workEnd    String   @default("17:00")
+  sleepStart String   @default("23:00")
+  sleepEnd   String   @default("07:00")
+  weekdays   Int[]    @default([1, 2, 3, 4, 5]) // 0=Sun..6=Sat
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("availability_preferences")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String?
+  data      Json             @default("{}")
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+  @@map("notifications")
+}
+
+model Reminder {
+  id        String         @id @default(uuid())
+  userId    String
+  refType   String // TIMELINE_BLOCK | TASK | TODO
+  refId     String
+  remindAt  DateTime       @db.Timestamptz(3)
+  status    ReminderStatus @default(SCHEDULED)
+  title     String
+  body      String?
+  createdAt DateTime       @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, remindAt])
+  @@index([userId])
+  @@map("reminders")
+}
