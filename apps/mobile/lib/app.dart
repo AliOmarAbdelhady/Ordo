@@ -79,10 +79,16 @@ class _OrdoAppState extends ConsumerState<OrdoApp> {
     final light = ordoTheme(settings.accent, Brightness.light);
     final dark = ordoTheme(settings.accent, Brightness.dark);
 
-    if (auth.isLoading) {
-      return MaterialApp(debugShowCheckedModeBanner: false, theme: light, darkTheme: dark, themeMode: settings.themeMode, home: const _Splash());
-    }
-
+    // Always return the SAME MaterialApp.router root — never swap it for a
+    // plain MaterialApp(home: _Splash()) while auth is loading. Those two build
+    // structurally different subtrees (a `home:` plain Navigator vs a `routerConfig:`
+    // Router), so reconciling across the loading→loaded transition — which fires on
+    // every launch AND every login, since login() sets state = AsyncLoading() —
+    // deactivates an internal Navigator/Overlay InheritedWidget while descendants
+    // still depend on it, tripping InheritedElement.debugDeactivated →
+    // "_dependents.isEmpty is not true" (red error screen in debug). Now the
+    // inherited-widget ancestry stays constant; only the leaf content swaps to the
+    // splash while we don't yet have a session.
     return MaterialApp.router(
       debugShowCheckedModeBanner: false,
       title: 'Ordo',
@@ -94,7 +100,7 @@ class _OrdoAppState extends ConsumerState<OrdoApp> {
         return MediaQuery(
           // Cap font scaling for a consistent look.
           data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(MediaQuery.textScalerOf(context).scale(1).clamp(0.9, 1.2))),
-          child: child ?? const SizedBox(),
+          child: auth.isLoading ? const _Splash() : (child ?? const SizedBox()),
         );
       },
     );
