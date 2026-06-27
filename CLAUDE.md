@@ -44,7 +44,7 @@ ordo/
 - Mobile feature folders under `lib/features/` mirror the pillars: `auth`, `today`, `timeline`, `groups`, `tasks`, `todos`, `chat`, `availability`, `inbox`, `profile`, plus `shell` (bottom-nav app shell). Shared widgets/format live in `lib/shared/`; cross-cutting wiring (api, auth, providers, realtime, router, theme) lives in `lib/core/`.
 
 ## Local dev
-- Postgres is local: `postgresql://postgres:Ali_2792005@localhost:5432/ordo` (see `apps/api/.env`).
+- Postgres is local — the connection string lives in `apps/api/.env` (copy it from `apps/api/.env.example` and set your local password).
 - `pnpm install`, then `pnpm db:migrate` and `pnpm db:seed` to bootstrap data.
 - Backend: `pnpm dev:api` → `http://localhost:4000/api`.
 - Mobile: `cd apps/mobile && flutter pub get`, then `flutter run` (picks a connected device; on Chrome, Linux desktop, or the Android emulator it targets `localhost:4000`; on a **physical device** pass `--dart-define=ORDO_API_URL=http://<your-LAN-IP>:4000`). See `lib/core/config.dart`.

@@ -45,15 +45,16 @@ This repo contains a **working, end-to-end MVP** covering all four pillars.
 - Flutter 3.41+ / Dart 3.11+
 
 ### 1. Database
-The app uses your local Postgres. Create the DB once:
+The app uses your local Postgres. Create the DB once (replace `<your-password>` with your local `postgres` user password):
 ```bash
-PGPASSWORD=Ali_2792005 psql -h localhost -U postgres -d postgres -c "CREATE DATABASE ordo;"
-PGPASSWORD=Ali_2792005 psql -h localhost -U postgres -d ordo -c "CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+PGPASSWORD=<your-password> psql -h localhost -U postgres -d postgres -c "CREATE DATABASE ordo;"
+PGPASSWORD=<your-password> psql -h localhost -U postgres -d ordo -c "CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
 ```
-(DBeaver connects with user `postgres`, password `Ali_2792005`, database `ordo`.)
+(DBeaver connects with user `postgres`, database `ordo`, using your local password.)
 
 ### 2. Backend
 ```bash
+cp apps/api/.env.example apps/api/.env   # then edit DATABASE_URL to set your local password
 pnpm install
 pnpm db:migrate     # prisma migrate dev
 pnpm db:seed        # demo data
