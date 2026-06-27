@@ -9,9 +9,13 @@ import '../../core/providers.dart';
 import '../../models/models.dart';
 import '../../shared/widgets.dart';
 import '../timeline/add_block_sheet.dart';
+import 'group_views.dart';
 
-/// A group's command center. Internal tabs (Home / Timeline / Tasks / Members)
-/// are shown based on the group's enabled modules; Home is always present.
+/// A group's command center. Every enabled module is a swipeable tab
+/// (Home / Timeline / Tasks / Members / Polls / Announcements / Files /
+/// Location / Copilot / Settings). Home surfaces a "what's new" feed; the
+/// floating action button is contextual to the active tab so you can create
+/// from anywhere. Chat stays secondary — an AppBar action, not a tab.
 class GroupHomePage extends ConsumerStatefulWidget {
   final String groupId;
   const GroupHomePage({super.key, required this.groupId});
@@ -20,32 +24,124 @@ class GroupHomePage extends ConsumerStatefulWidget {
   ConsumerState<GroupHomePage> createState() => _GroupHomePageState();
 }
 
-enum _Tab { home, timeline, tasks, members }
+/// Every module that can appear as a tab. Order here is the strip order.
+enum GroupTab {
+  home('Home', Icons.home_outlined),
+  timeline('Timeline', Icons.calendar_view_week_outlined),
+  tasks('Tasks', Icons.task_alt_outlined),
+  members('Members', Icons.people_outline),
+  polls('Polls', Icons.poll_outlined),
+  announcements('News', Icons.campaign_outlined),
+  files('Files', Icons.folder_outlined),
+  location('Map', Icons.location_on_outlined),
+  copilot('Copilot', Icons.auto_awesome_outlined),
+  settings('Settings', Icons.settings_outlined);
 
-class _GroupHomePageState extends ConsumerState<GroupHomePage> {
-  _Tab _tab = _Tab.home;
+  final String label;
+  final IconData icon;
+  const GroupTab(this.label, this.icon);
+}
+
+class _GroupHomePageState extends ConsumerState<GroupHomePage> with TickerProviderStateMixin {
+  TabController? _ctrl;
+  int _lastIndex = 0;
+  List<GroupTab>? _lastTabs;
   bool _mutating = false;
 
   String get _gid => widget.groupId;
 
-  List<_Tab> _tabsFor(GroupDetail g) {
-    final tabs = <_Tab>[_Tab.home];
-    if (g.modules.timeline) tabs.add(_Tab.timeline);
-    if (g.modules.tasks) tabs.add(_Tab.tasks);
-    if (g.modules.members) tabs.add(_Tab.members);
-    return tabs;
+  List<GroupTab> _tabsFor(GroupDetail g) {
+    return [
+      GroupTab.home,
+      if (g.modules.timeline) GroupTab.timeline,
+      if (g.modules.tasks) GroupTab.tasks,
+      if (g.modules.members) GroupTab.members,
+      if (g.modules.polls) GroupTab.polls,
+      if (g.modules.announcements) GroupTab.announcements,
+      if (g.modules.files) GroupTab.files,
+      if (g.modules.location) GroupTab.location,
+      GroupTab.copilot,
+      GroupTab.settings,
+    ];
   }
 
-  String _tabLabel(_Tab t) => const {
-        _Tab.home: 'Home',
-        _Tab.timeline: 'Timeline',
-        _Tab.tasks: 'Tasks',
-        _Tab.members: 'Members',
-      }[t]!;
+  /// (Re)create the TabController only when the tab count changes — which
+  /// happens once after the group loads, and again only if a module is toggled
+  /// in Settings. We preserve the semantic TAB the user was on (not its numeric
+  /// index): toggling a module that sits *before* the active tab would otherwise
+  /// shift everything left and silently land the user on a different tab.
+  void _ensureController(List<GroupTab> newTabs) {
+    if (newTabs.isEmpty) return;
+    final length = newTabs.length;
+    if (_ctrl != null && _ctrl!.length == length) {
+      _lastTabs = newTabs;
+      return;
+    }
+    GroupTab? keep;
+    final old = _lastTabs;
+    if (old != null && _lastIndex < old.length) keep = old[_lastIndex];
+    final initial = (keep != null && newTabs.contains(keep)) ? newTabs.indexOf(keep) : _lastIndex.clamp(0, length - 1);
+    _ctrl?.removeListener(_onTabChanged);
+    _ctrl?.dispose();
+    _ctrl = TabController(length: length, vsync: this, initialIndex: initial);
+    _ctrl!.addListener(_onTabChanged);
+    _lastIndex = _ctrl!.index;
+    _lastTabs = newTabs;
+  }
+
+  void _onTabChanged() {
+    final c = _ctrl;
+    if (c == null) return;
+    // Only react once the swipe/settle is complete, and only on real changes —
+    // the guard prevents a setState → listener → setState rebuild loop.
+    if (!c.indexIsChanging && c.index != _lastIndex) {
+      _lastIndex = c.index;
+      setState(() {});
+    }
+  }
+
+  bool _isTabActive(GroupTab tab, List<GroupTab> tabs) {
+    final c = _ctrl;
+    if (c == null || c.index >= tabs.length) return false;
+    return tabs[c.index] == tab;
+  }
+
+  void _jumpTo(GroupTab tab) {
+    final c = _ctrl;
+    final g = ref.read(groupDetailProvider(_gid)).valueOrNull;
+    if (c == null || g == null) return;
+    final tabs = _tabsFor(g);
+    final i = tabs.indexOf(tab);
+    if (i >= 0) c.animateTo(i);
+  }
 
   Future<void> _refresh() async {
+    final g = ref.read(groupDetailProvider(_gid)).valueOrNull;
     ref.invalidate(groupDetailProvider(_gid));
     ref.invalidate(groupsProvider);
+    if (g != null) _invalidateActiveTab(g);
+  }
+
+  void _invalidateActiveTab(GroupDetail g) {
+    final c = _ctrl;
+    if (c == null) return;
+    final tabs = _tabsFor(g);
+    if (c.index >= tabs.length) return;
+    switch (tabs[c.index]) {
+      case GroupTab.tasks:
+        ref.invalidate(tasksProvider((groupId: _gid, tab: 'all')));
+        ref.invalidate(tasksProvider((groupId: _gid, tab: 'mine')));
+      case GroupTab.polls:
+        ref.invalidate(pollsProvider(_gid));
+      case GroupTab.announcements:
+        ref.invalidate(announcementsProvider(_gid));
+      case GroupTab.files:
+        ref.invalidate(mediaProvider(_gid));
+      case GroupTab.location:
+        ref.invalidate(locationsProvider(_gid));
+      default:
+        break;
+    }
   }
 
   @override
@@ -53,6 +149,13 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
     super.didChangeDependencies();
     // Refresh on focus / first build.
     ref.invalidate(groupDetailProvider(_gid));
+  }
+
+  @override
+  void dispose() {
+    _ctrl?.removeListener(_onTabChanged);
+    _ctrl?.dispose();
+    super.dispose();
   }
 
   Future<void> _shareInvite() async {
@@ -80,12 +183,7 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
                 child: SelectableText(
                   code,
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 3,
-                    color: Theme.of(ctx).colorScheme.primary,
-                  ),
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, letterSpacing: 3, color: Theme.of(ctx).colorScheme.primary),
                 ),
               ),
             ],
@@ -167,22 +265,6 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
                 _togglePin(g);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('Settings'),
-              onTap: () {
-                Navigator.pop(ctx);
-                context.push('/groups/$_gid/settings');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.apps_outlined),
-              title: const Text('More (polls, files, location, AI)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                context.push('/groups/$_gid/more');
-              },
-            ),
             const Divider(height: 1),
             ListTile(
               leading: Icon(Icons.logout, color: Theme.of(ctx).colorScheme.error),
@@ -198,9 +280,67 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
     );
   }
 
+  FloatingActionButton? _buildFab(GroupDetail g, List<GroupTab> tabs) {
+    final c = _ctrl;
+    if (c == null || c.index >= tabs.length) return null;
+    final accent = OrdoAccent.byName(g.accentColor).primary(Theme.of(context).brightness == Brightness.dark);
+
+    FloatingActionButton fab(VoidCallback onTap, IconData icon) => FloatingActionButton(
+          heroTag: 'groupHostFab',
+          backgroundColor: accent,
+          foregroundColor: Colors.white,
+          onPressed: onTap,
+          child: Icon(icon),
+        );
+    switch (tabs[c.index]) {
+      case GroupTab.timeline:
+        return fab(() => showAddBlockSheet(context, ref, groupId: _gid), Icons.add);
+      case GroupTab.tasks:
+        return fab(() => showCreateTaskSheet(context, g), Icons.add);
+      case GroupTab.polls:
+        return fab(() => showCreatePollSheet(context, ref, _gid), Icons.add);
+      case GroupTab.announcements:
+        return fab(() => showCreateAnnouncementSheet(context, ref, _gid), Icons.add);
+      case GroupTab.files:
+        return fab(() => pickGroupFile(context, ref, _gid), Icons.upload_file);
+      default:
+        return null;
+    }
+  }
+
+  Widget _buildTab(GroupDetail g, GroupTab t) {
+    final tabs = _tabsFor(g);
+    switch (t) {
+      case GroupTab.home:
+        return _HomeTab(group: g, onJumpTo: _jumpTo);
+      case GroupTab.timeline:
+        return _TimelineTab(groupId: _gid);
+      case GroupTab.tasks:
+        return _TasksTab(group: g);
+      case GroupTab.members:
+        return _MembersTab(group: g);
+      case GroupTab.polls:
+        return PollsView(groupId: _gid);
+      case GroupTab.announcements:
+        return AnnouncementsView(groupId: _gid);
+      case GroupTab.files:
+        return FilesView(groupId: _gid);
+      case GroupTab.location:
+        return LocationView(groupId: _gid, active: _isTabActive(GroupTab.location, tabs));
+      case GroupTab.copilot:
+        return CopilotView(groupId: _gid);
+      case GroupTab.settings:
+        return GroupSettingsView(groupId: _gid);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final detail = ref.watch(groupDetailProvider(_gid));
+    final g = detail.valueOrNull;
+    final tabs = g != null ? _tabsFor(g) : const <GroupTab>[];
+    if (g != null) _ensureController(tabs);
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -215,6 +355,12 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
         ),
         title: const Text('Group'),
         actions: [
+          if (g?.modules.chat ?? false)
+            IconButton(
+              icon: const Icon(Icons.chat_bubble_outline),
+              tooltip: 'Chat',
+              onPressed: () => context.push('/groups/$_gid/chat'),
+            ),
           IconButton(
             icon: _mutating
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
@@ -223,6 +369,7 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
           ),
         ],
       ),
+      floatingActionButton: (g != null && _ctrl != null) ? _buildFab(g, tabs) : null,
       body: detail.when(
         loading: () => const _BodySkeleton(),
         error: (e, _) => OEmptyState(
@@ -233,24 +380,16 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
         ),
         data: (g) {
           final tabs = _tabsFor(g);
-          // Clamp the selected tab to one that exists.
-          if (!tabs.contains(_tab)) _tab = _Tab.home;
+          // _ctrl was ensured above; clamp is a safety net for the brief window
+          // where a module was just toggled off.
           return Column(
             children: [
               _Header(group: g, onMenu: () => _openMenu(g)),
-              _TabBar(
-                tabs: tabs,
-                selected: _tab,
-                label: _tabLabel,
-                onChanged: (t) => setState(() => _tab = t),
-              ),
+              _GroupTabBar(controller: _ctrl!, tabs: tabs),
               Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  child: KeyedSubtree(
-                    key: ValueKey(_tab),
-                    child: _buildTab(g),
-                  ),
+                child: TabBarView(
+                  controller: _ctrl!,
+                  children: tabs.map((t) => _buildTab(g, t)).toList(),
                 ),
               ),
             ],
@@ -258,19 +397,6 @@ class _GroupHomePageState extends ConsumerState<GroupHomePage> {
         },
       ),
     );
-  }
-
-  Widget _buildTab(GroupDetail g) {
-    switch (_tab) {
-      case _Tab.home:
-        return _HomeTab(group: g, onSwitchTab: (t) => setState(() => _tab = t));
-      case _Tab.timeline:
-        return _TimelineTab(groupId: _gid);
-      case _Tab.tasks:
-        return _TasksTab(group: g);
-      case _Tab.members:
-        return _MembersTab(group: g);
-    }
   }
 }
 
@@ -306,12 +432,7 @@ class _Header extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      group.name,
-                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    Text(group.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700), maxLines: 2, overflow: TextOverflow.ellipsis),
                     if (group.description != null && group.description!.trim().isNotEmpty) ...[
                       const SizedBox(height: 2),
                       Text(
@@ -324,11 +445,7 @@ class _Header extends StatelessWidget {
                   ],
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.more_horiz),
-                onPressed: onMenu,
-                tooltip: 'Group actions',
-              ),
+              IconButton(icon: const Icon(Icons.more_horiz), onPressed: onMenu, tooltip: 'Group actions'),
             ],
           ),
           const SizedBox(height: OrdoSpacing.md),
@@ -345,14 +462,8 @@ class _Header extends StatelessWidget {
                   spacing: OrdoSpacing.sm,
                   runSpacing: 4,
                   children: [
-                    OBadge(
-                      label: '${group.memberCount} ${group.memberCount == 1 ? 'member' : 'members'}',
-                      icon: Icons.people_outline,
-                    ),
-                    OBadge(
-                      label: group.role,
-                      color: accent.primary(isDark),
-                    ),
+                    OBadge(label: '${group.memberCount} ${group.memberCount == 1 ? 'member' : 'members'}', icon: Icons.people_outline),
+                    OBadge(label: group.role, color: accent.primary(isDark)),
                   ],
                 ),
               ),
@@ -364,68 +475,116 @@ class _Header extends StatelessWidget {
   }
 }
 
-// ── Tab bar (segmented) ──────────────────────────────────────────────────────
+// ── Tab bar (scrollable when there are many modules) ─────────────────────────
 
-class _TabBar extends StatelessWidget {
-  final List<_Tab> tabs;
-  final _Tab selected;
-  final String Function(_Tab) label;
-  final ValueChanged<_Tab> onChanged;
-  const _TabBar({required this.tabs, required this.selected, required this.label, required this.onChanged});
+class _GroupTabBar extends StatelessWidget implements PreferredSizeWidget {
+  final TabController controller;
+  final List<GroupTab> tabs;
+  const _GroupTabBar({required this.controller, required this.tabs});
+
+  @override
+  Size get preferredSize => const Size.fromHeight(46);
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, OrdoSpacing.sm, OrdoSpacing.lg, OrdoSpacing.sm),
-      child: OSegmented<_Tab>(
-        segments: tabs,
-        value: selected,
-        label: label,
-        onChanged: onChanged,
-      ),
+    final cs = Theme.of(context).colorScheme;
+    final scrollable = tabs.length > 4;
+    return TabBar(
+      controller: controller,
+      isScrollable: scrollable,
+      tabAlignment: scrollable ? TabAlignment.start : TabAlignment.center,
+      padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.sm),
+      labelPadding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.md),
+      indicatorSize: TabBarIndicatorSize.tab,
+      indicator: BoxDecoration(color: cs.primary.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(OrdoRadius.pill)),
+      dividerColor: Colors.transparent,
+      overlayColor: WidgetStatePropertyAll(cs.primary.withValues(alpha: 0.06)),
+      labelColor: cs.primary,
+      unselectedLabelColor: cs.onSecondary,
+      labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+      unselectedLabelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+      splashBorderRadius: BorderRadius.circular(OrdoRadius.pill),
+      tabs: tabs.map((t) => Tab(text: t.label)).toList(),
     );
   }
 }
 
-// ── Home tab ─────────────────────────────────────────────────────────────────
+// ── Home tab: up next + "what's new" feed + quick actions ────────────────────
 
 class _HomeTab extends ConsumerWidget {
   final GroupDetail group;
-  final ValueChanged<_Tab> onSwitchTab;
-  const _HomeTab({required this.group, required this.onSwitchTab});
+  final void Function(GroupTab) onJumpTo;
+  const _HomeTab({required this.group, required this.onJumpTo});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final now = DateTime.now();
-    final from = startOfDay(now);
-    final to = addDays(from, 7);
+    final cs = Theme.of(context).colorScheme;
     final accent = OrdoAccent.byName(group.accentColor);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accentColor = accent.primary(isDark);
 
+    final from = startOfDay(DateTime.now());
+    final to = addDays(from, 30); // wider than the Timeline tab's week view so Home surfaces the real next event
     final timeline = ref.watch(groupTimelineProvider((groupId: group.id, from: from, to: to)));
     final nowTs = DateTime.now();
     final nextUp = [...?timeline.valueOrNull?.items]
       ..retainWhere((i) => i.startTime.isAfter(nowTs) || i.startTime.isAtSameMomentAs(nowTs))
       ..sort((a, b) => a.startTime.compareTo(b.startTime));
-
     final TimelineItem? nearest = nextUp.isNotEmpty ? nextUp.first : null;
+
+    // "What's new" — each source is module-gated (conditional watch is safe in
+    // Riverpod: it tracks providers watched this build and unsubscribes the rest).
+    final announcements = group.modules.announcements ? ref.watch(announcementsProvider(group.id)).valueOrNull : null;
+    final polls = group.modules.polls ? ref.watch(pollsProvider(group.id)).valueOrNull : null;
+    final files = group.modules.files ? ref.watch(mediaProvider(group.id)).valueOrNull : null;
+
+    final latestAnnouncement = (announcements != null && announcements.isNotEmpty) ? announcements.first : null;
+    final latestPoll = (polls != null && polls.isNotEmpty) ? polls.first : null;
+    final recentFiles = files != null ? files.take(2).toList() : <MediaFile>[];
+
+    final whatsNew = <Widget>[
+      if (latestAnnouncement != null)
+        _WhatsNewCard(
+          icon: Icons.campaign_outlined,
+          iconColor: Colors.amber.shade700,
+          title: latestAnnouncement.title,
+          subtitle: latestAnnouncement.body,
+          onTap: () => onJumpTo(GroupTab.announcements),
+        ),
+      if (latestPoll != null)
+        _WhatsNewCard(
+          icon: Icons.poll_outlined,
+          iconColor: cs.primary,
+          title: latestPoll.question,
+          subtitle: latestPoll.closed ? 'Poll closed' : '${latestPoll.totalVoters} voter${latestPoll.totalVoters == 1 ? '' : 's'} · tap to vote',
+          onTap: () => onJumpTo(GroupTab.polls),
+        ),
+      for (final f in recentFiles)
+        _WhatsNewCard(
+          icon: f.isImage ? Icons.image_outlined : Icons.insert_drive_file_outlined,
+          iconColor: cs.primary,
+          title: f.filename,
+          subtitle: '${f.uploaderName} · ${_size(f.sizeBytes)}',
+          onTap: () => onJumpTo(GroupTab.files),
+        ),
+      if (group.modules.tasks && group.pendingTaskCount > 0)
+        _WhatsNewCard(
+          icon: Icons.task_alt_outlined,
+          iconColor: accentColor,
+          title: '${group.pendingTaskCount} pending task${group.pendingTaskCount == 1 ? '' : 's'}',
+          subtitle: 'Tap to see what needs doing',
+          onTap: () => onJumpTo(GroupTab.tasks),
+        ),
+    ];
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, OrdoSpacing.sm, OrdoSpacing.lg, OrdoSpacing.xxl),
       children: [
-        // Next event / nearest block
         OSectionHeader(title: 'Up next'),
         if (group.nextEvent != null)
-          _NextEventCard(
-            title: group.nextEvent!.title,
-            when: group.nextEvent!.startTime,
-            accent: accent.primary(isDark),
-          )
+          _NextEventCard(title: group.nextEvent!.title, when: group.nextEvent!.startTime, accent: accentColor)
         else if (timeline.isLoading)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: OrdoSpacing.lg),
-            child: SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-          )
+          const Padding(padding: EdgeInsets.symmetric(horizontal: OrdoSpacing.lg), child: SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)))
         else if (nearest != null)
           _NextEventCard(
             title: nearest.isBusy ? 'Busy' : nearest.title,
@@ -437,44 +596,40 @@ class _HomeTab extends ConsumerWidget {
           )
         else
           OCard(
-            onTap: group.modules.timeline
-                ? () => showAddBlockSheet(context, ref, groupId: group.id)
-                : null,
-            child: Row(
-              children: [
-                Icon(Icons.event_available_outlined, color: accent.primary(isDark)),
-                const SizedBox(width: OrdoSpacing.md),
-                Expanded(
-                  child: Text(
-                    group.modules.timeline ? 'No upcoming events. Add one?' : 'No upcoming events.',
-                    style: TextStyle(color: Theme.of(context).colorScheme.onSecondary),
-                  ),
-                ),
-              ],
-            ),
+            onTap: group.modules.timeline ? () => showAddBlockSheet(context, ref, groupId: group.id) : null,
+            child: Row(children: [
+              Icon(Icons.event_available_outlined, color: accentColor),
+              const SizedBox(width: OrdoSpacing.md),
+              Expanded(child: Text(group.modules.timeline ? 'No upcoming events. Add one?' : 'No upcoming events.', style: TextStyle(color: cs.onSecondary))),
+            ]),
           ),
         const SizedBox(height: OrdoSpacing.md),
 
-        // Quick actions grid
+        OSectionHeader(title: 'What’s new'),
+        if (whatsNew.isEmpty)
+          OCard(
+            child: Row(children: [
+              Icon(Icons.check_circle_outline, color: accentColor),
+              const SizedBox(width: OrdoSpacing.md),
+              const Expanded(child: Text('You’re all caught up', style: TextStyle(fontWeight: FontWeight.w600))),
+            ]),
+          )
+        else
+          ...whatsNew,
+        const SizedBox(height: OrdoSpacing.md),
+
         OSectionHeader(title: 'Quick actions'),
         Row(
           children: [
-            Expanded(
-              child: _ActionTile(
-                icon: Icons.search,
-                label: 'Find free time',
-                accent: accent.primary(isDark),
-                onTap: () => context.push('/find-slot?groupId=${group.id}'),
-              ),
-            ),
+            Expanded(child: _ActionTile(icon: Icons.search, label: 'Find free time', accent: accentColor, onTap: () => context.push('/find-slot?groupId=${group.id}'))),
             const SizedBox(width: OrdoSpacing.md),
             Expanded(
               child: _ActionTile(
                 icon: Icons.task_alt,
                 label: 'Tasks',
                 badge: group.pendingTaskCount > 0 ? '${group.pendingTaskCount}' : null,
-                accent: accent.primary(isDark),
-                onTap: group.modules.tasks ? () => onSwitchTab(_Tab.tasks) : null,
+                accent: accentColor,
+                onTap: group.modules.tasks ? () => onJumpTo(GroupTab.tasks) : null,
               ),
             ),
           ],
@@ -487,19 +642,12 @@ class _HomeTab extends ConsumerWidget {
                 icon: Icons.chat_bubble_outline,
                 label: 'Chat',
                 badge: group.unreadCount > 0 ? '${group.unreadCount}' : null,
-                accent: accent.primary(isDark),
+                accent: accentColor,
                 onTap: group.modules.chat ? () => context.push('/groups/${group.id}/chat') : null,
               ),
             ),
             const SizedBox(width: OrdoSpacing.md),
-            Expanded(
-              child: _ActionTile(
-                icon: Icons.people_outline,
-                label: 'Members',
-                accent: accent.primary(isDark),
-                onTap: group.modules.members ? () => onSwitchTab(_Tab.members) : null,
-              ),
-            ),
+            Expanded(child: _ActionTile(icon: Icons.people_outline, label: 'Members', accent: accentColor, onTap: group.modules.members ? () => onJumpTo(GroupTab.members) : null)),
           ],
         ),
         const SizedBox(height: OrdoSpacing.md),
@@ -508,21 +656,65 @@ class _HomeTab extends ConsumerWidget {
           OCard(
             onTap: () => context.push('/groups/${group.id}/chat'),
             padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg, vertical: OrdoSpacing.md),
-            child: Row(
-              children: [
-                Icon(Icons.mark_chat_unread_outlined, color: accent.primary(isDark)),
-                const SizedBox(width: OrdoSpacing.md),
-                Expanded(
-                  child: Text(
-                    '${group.unreadCount} unread ${group.unreadCount == 1 ? 'message' : 'messages'}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-                const Icon(Icons.chevron_right, color: Colors.grey),
-              ],
-            ),
+            child: Row(children: [
+              Icon(Icons.mark_chat_unread_outlined, color: accentColor),
+              const SizedBox(width: OrdoSpacing.md),
+              Expanded(child: Text('${group.unreadCount} unread ${group.unreadCount == 1 ? 'message' : 'messages'}', style: const TextStyle(fontWeight: FontWeight.w600))),
+              const Icon(Icons.chevron_right, color: Colors.grey),
+            ]),
           ),
       ],
+    );
+  }
+
+  String _size(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+}
+
+class _WhatsNewCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String? subtitle;
+  final VoidCallback? onTap;
+  const _WhatsNewCard({required this.icon, required this.iconColor, required this.title, this.subtitle, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: OrdoSpacing.sm),
+      child: OCard(
+        onTap: onTap,
+        padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.md, vertical: OrdoSpacing.md),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(color: iconColor.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(OrdoRadius.md)),
+              child: Icon(icon, color: iconColor, size: 20),
+            ),
+            const SizedBox(width: OrdoSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: const TextStyle(fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(subtitle!, style: TextStyle(fontSize: 12, color: cs.onSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ],
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Colors.grey, size: 20),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -534,14 +726,7 @@ class _NextEventCard extends StatelessWidget {
   final String? location;
   final bool muted;
   final Color accent;
-  const _NextEventCard({
-    required this.title,
-    required this.when,
-    this.end,
-    this.location,
-    this.muted = false,
-    required this.accent,
-  });
+  const _NextEventCard({required this.title, required this.when, this.end, this.location, this.muted = false, required this.accent});
 
   @override
   Widget build(BuildContext context) {
@@ -569,16 +754,7 @@ class _NextEventCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          title,
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: muted ? cs.onSecondary : cs.onSurface,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: muted ? cs.onSecondary : cs.onSurface), maxLines: 1, overflow: TextOverflow.ellipsis),
                         const SizedBox(height: 2),
                         Wrap(
                           crossAxisAlignment: WrapCrossAlignment.center,
@@ -627,12 +803,7 @@ class _ActionTile extends StatelessWidget {
             Stack(
               clipBehavior: Clip.none,
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(color: color.withValues(alpha: 0.14), shape: BoxShape.circle),
-                  child: Icon(icon, color: color, size: 22),
-                ),
+                Container(width: 44, height: 44, decoration: BoxDecoration(color: color.withValues(alpha: 0.14), shape: BoxShape.circle), child: Icon(icon, color: color, size: 22)),
                 if (badge != null)
                   Positioned(
                     right: -4,
@@ -640,10 +811,7 @@ class _ActionTile extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                       decoration: BoxDecoration(color: cs.error, borderRadius: BorderRadius.circular(OrdoRadius.pill)),
-                      child: Text(
-                        badge!,
-                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700),
-                      ),
+                      child: Text(badge!, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
                     ),
                   ),
               ],
@@ -658,6 +826,7 @@ class _ActionTile extends StatelessWidget {
 }
 
 // ── Timeline tab ─────────────────────────────────────────────────────────────
+// (No inner FAB — the host provides a contextual one for the active tab.)
 
 class _TimelineTab extends ConsumerStatefulWidget {
   final String groupId;
@@ -680,41 +849,20 @@ class _TimelineTabState extends ConsumerState<_TimelineTab> {
 
     return Column(
       children: [
-        // Week navigator
         Padding(
           padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, OrdoSpacing.sm, OrdoSpacing.lg, OrdoSpacing.sm),
           child: Row(
             children: [
-              IconButton(
-                icon: const Icon(Icons.chevron_left),
-                onPressed: () => setState(() => _weekStart = addDays(_weekStart, -7)),
-              ),
-              Expanded(
-                child: Center(
-                  child: Text(
-                    '${fmtDate(_range.from)} – ${fmtDate(addDays(_range.from, 6))}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.chevron_right),
-                onPressed: () => setState(() => _weekStart = addDays(_weekStart, 7)),
-              ),
-              TextButton(
-                onPressed: () => setState(() => _weekStart = startOfWeek(DateTime.now())),
-                child: const Text('Today'),
-              ),
+              IconButton(icon: const Icon(Icons.chevron_left), onPressed: () => setState(() => _weekStart = addDays(_weekStart, -7))),
+              Expanded(child: Center(child: Text('${fmtDate(_range.from)} – ${fmtDate(addDays(_range.from, 6))}', style: const TextStyle(fontWeight: FontWeight.w600)))),
+              IconButton(icon: const Icon(Icons.chevron_right), onPressed: () => setState(() => _weekStart = addDays(_weekStart, 7))),
+              TextButton(onPressed: () => setState(() => _weekStart = startOfWeek(DateTime.now())), child: const Text('Today')),
             ],
           ),
         ),
         Expanded(child: res.when(
           loading: () => const _ListSkeleton(),
-          error: (e, _) => OEmptyState(
-            icon: Icons.error_outline,
-            title: 'Could not load timeline',
-            subtitle: e is ApiException ? e.message : null,
-          ),
+          error: (e, _) => OEmptyState(icon: Icons.error_outline, title: 'Could not load timeline', subtitle: e is ApiException ? e.message : null),
           data: (data) {
             final items = [...data.items]..sort((a, b) => a.startTime.compareTo(b.startTime));
             if (items.isEmpty) {
@@ -729,45 +877,26 @@ class _TimelineTabState extends ConsumerState<_TimelineTab> {
                 ),
               );
             }
-            return Stack(
-              children: [
-                ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, 0, OrdoSpacing.lg, 96),
-                  itemCount: items.length,
-                  itemBuilder: (_, i) {
-                    final it = items[i];
-                    final showDayHeader = i == 0 || !isSameDay(items[i - 1].startTime, it.startTime);
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (showDayHeader) ...[
-                          if (i > 0) const SizedBox(height: OrdoSpacing.md),
-                          Padding(
-                            padding: const EdgeInsets.only(top: OrdoSpacing.sm, bottom: OrdoSpacing.xs),
-                            child: Text(
-                              dayLabel(it.startTime),
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: accent.primary(isDark)),
-                            ),
-                          ),
-                        ],
-                        _TimelineTile(item: it),
-                      ],
-                    );
-                  },
-                ),
-                Positioned(
-                  right: OrdoSpacing.lg,
-                  bottom: OrdoSpacing.lg,
-                  child: FloatingActionButton(
-                    heroTag: 'groupAddEvent',
-                    mini: true,
-                    backgroundColor: accent.primary(isDark),
-                    foregroundColor: Colors.white,
-                    onPressed: () => showAddBlockSheet(context, ref, groupId: widget.groupId),
-                    child: const Icon(Icons.add),
-                  ),
-                ),
-              ],
+            return ListView.builder(
+              padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, 0, OrdoSpacing.lg, 96),
+              itemCount: items.length,
+              itemBuilder: (_, i) {
+                final it = items[i];
+                final showDayHeader = i == 0 || !isSameDay(items[i - 1].startTime, it.startTime);
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (showDayHeader) ...[
+                      if (i > 0) const SizedBox(height: OrdoSpacing.md),
+                      Padding(
+                        padding: const EdgeInsets.only(top: OrdoSpacing.sm, bottom: OrdoSpacing.xs),
+                        child: Text(dayLabel(it.startTime), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: accent.primary(isDark))),
+                      ),
+                    ],
+                    _TimelineTile(item: it),
+                  ],
+                );
+              },
             );
           },
         )),
@@ -786,7 +915,6 @@ class _TimelineTile extends StatelessWidget {
     final busy = item.isBusy;
     final titleOnly = item.redacted && !busy;
     final full = !item.redacted && !busy;
-
     final title = busy ? 'Busy' : item.title;
 
     return Padding(
@@ -809,65 +937,32 @@ class _TimelineTile extends StatelessWidget {
                           children: [
                             Row(
                               children: [
-                                if (busy) ...[
-                                  Icon(Icons.lock_outline, size: 14, color: cs.onSecondary),
-                                  const SizedBox(width: 4),
-                                ],
+                                if (busy) ...[Icon(Icons.lock_outline, size: 14, color: cs.onSecondary), const SizedBox(width: 4)],
                                 Flexible(
-                                  child: Text(
-                                    title,
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: busy ? cs.onSecondary : cs.onSurface,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
+                                  child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: busy ? cs.onSecondary : cs.onSurface), maxLines: 1, overflow: TextOverflow.ellipsis),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 2),
-                            Text(
-                              item.allDay ? 'All day' : '${fmtTime(item.startTime)} – ${fmtTime(item.endTime)}',
-                              style: TextStyle(fontSize: 12, color: cs.onSecondary),
-                            ),
+                            Text(item.allDay ? 'All day' : '${fmtTime(item.startTime)} – ${fmtTime(item.endTime)}', style: TextStyle(fontSize: 12, color: cs.onSecondary)),
                             if (full && item.location != null && item.location!.isNotEmpty) ...[
                               const SizedBox(height: 4),
-                              Row(
-                                children: [
-                                  Icon(Icons.place_outlined, size: 12, color: cs.onSecondary),
-                                  const SizedBox(width: 3),
-                                  Flexible(
-                                    child: Text(
-                                      item.location!,
-                                      style: TextStyle(fontSize: 12, color: cs.onSecondary),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              Row(children: [
+                                Icon(Icons.place_outlined, size: 12, color: cs.onSecondary),
+                                const SizedBox(width: 3),
+                                Flexible(child: Text(item.location!, style: TextStyle(fontSize: 12, color: cs.onSecondary), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                              ]),
                             ],
                             if (full && item.description != null && item.description!.trim().isNotEmpty) ...[
                               const SizedBox(height: 4),
-                              Text(
-                                item.description!,
-                                style: TextStyle(fontSize: 12, color: cs.onSecondary, height: 1.35),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                              Text(item.description!, style: TextStyle(fontSize: 12, color: cs.onSecondary, height: 1.35), maxLines: 2, overflow: TextOverflow.ellipsis),
                             ],
                             if (titleOnly)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 2),
-                                child: Text('Private details hidden', style: TextStyle(fontSize: 11, color: cs.onSecondary)),
-                              ),
+                              Padding(padding: const EdgeInsets.only(top: 2), child: Text('Private details hidden', style: TextStyle(fontSize: 11, color: cs.onSecondary))),
                           ],
                         ),
                       ),
-                      if (item.isEvent)
-                        OBadge(label: 'Event', color: busy ? cs.onSecondary : item.color),
+                      if (item.isEvent) OBadge(label: 'Event', color: busy ? cs.onSecondary : item.color),
                     ],
                   ),
                 ),
@@ -881,6 +976,7 @@ class _TimelineTile extends StatelessWidget {
 }
 
 // ── Tasks tab ────────────────────────────────────────────────────────────────
+// (No inner FAB — the host provides a contextual one for the active tab.)
 
 class _TasksTab extends ConsumerStatefulWidget {
   final GroupDetail group;
@@ -898,62 +994,42 @@ class _TasksTabState extends ConsumerState<_TasksTab> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final me = ref.read(authControllerProvider).valueOrNull;
     final accent = OrdoAccent.byName(widget.group.accentColor);
-
     final res = ref.watch(tasksProvider((groupId: widget.group.id, tab: _tab)));
 
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, OrdoSpacing.sm, OrdoSpacing.lg, OrdoSpacing.sm),
-          child: Row(
-            children: [
-              Expanded(
-                child: OSegmented<String>(
-                  height: 36,
-                  segments: const ['all', 'mine'],
-                  value: _tab,
-                  label: (t) => t == 'all' ? 'All' : 'Mine',
-                  onChanged: (t) {
-                    setState(() => _tab = t);
-                    ref.invalidate(tasksProvider((groupId: widget.group.id, tab: t)));
-                  },
-                ),
-              ),
-              const SizedBox(width: OrdoSpacing.sm),
-              FloatingActionButton(
-                heroTag: 'groupAddTask',
-                mini: true,
-                backgroundColor: accent.primary(isDark),
-                foregroundColor: Colors.white,
-                onPressed: () => _showCreateTask(),
-                child: const Icon(Icons.add),
-              ),
-            ],
+          child: OSegmented<String>(
+            height: 36,
+            segments: const ['all', 'mine'],
+            value: _tab,
+            label: (t) => t == 'all' ? 'All' : 'Mine',
+            onChanged: (t) {
+              setState(() => _tab = t);
+              ref.invalidate(tasksProvider((groupId: widget.group.id, tab: t)));
+            },
           ),
         ),
         Expanded(
           child: res.when(
             loading: () => const _ListSkeleton(),
-            error: (e, _) => OEmptyState(
-              icon: Icons.error_outline,
-              title: 'Could not load tasks',
-              subtitle: e is ApiException ? e.message : null,
-            ),
+            error: (e, _) => OEmptyState(icon: Icons.error_outline, title: 'Could not load tasks', subtitle: e is ApiException ? e.message : null),
             data: (tasks) {
               if (tasks.isEmpty) {
                 return OEmptyState(
-                  icon: Icons.task_alt,
+                  icon: taskIcon,
                   title: _tab == 'mine' ? 'No tasks assigned to you' : 'No tasks yet',
                   subtitle: 'Create one to keep the group on track.',
                   action: FilledButton.icon(
-                    onPressed: () => _showCreateTask(),
+                    onPressed: () => showCreateTaskSheet(context, widget.group),
                     icon: const Icon(Icons.add),
                     label: const Text('New task'),
                   ),
                 );
               }
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, 0, OrdoSpacing.lg, OrdoSpacing.xxl),
+                padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, 0, OrdoSpacing.lg, 96),
                 itemCount: tasks.length,
                 itemBuilder: (_, i) {
                   final t = tasks[i];
@@ -967,17 +1043,9 @@ class _TasksTabState extends ConsumerState<_TasksTab> {
       ],
     );
   }
-
-  Future<void> _showCreateTask() {
-    return showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (_) => _CreateTaskSheet(group: widget.group, ref: ref),
-    );
-  }
 }
+
+const taskIcon = Icons.task_alt;
 
 class _TaskCard extends StatelessWidget {
   final Task task;
@@ -1014,23 +1082,7 @@ class _TaskCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        task.title,
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          decoration: done ? TextDecoration.lineThrough : null,
-                          color: done ? cs.onSecondary : cs.onSurface,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
+                Text(task.title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, decoration: done ? TextDecoration.lineThrough : null, color: done ? cs.onSecondary : cs.onSurface), maxLines: 2, overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 6),
                 Wrap(
                   spacing: OrdoSpacing.sm,
@@ -1038,182 +1090,20 @@ class _TaskCard extends StatelessWidget {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     OBadge(label: task.priority, color: pColor),
-                    if (task.dueAt != null) ...[
-                      OBadge(
-                        label: dayLabel(task.dueAt!),
-                        icon: Icons.calendar_today_outlined,
-                      ),
-                    ],
-                    if (task.commentCount > 0)
-                      OBadge(label: '${task.commentCount}', icon: Icons.chat_bubble_outline),
-                    if (assignedToMe)
-                      OBadge(label: 'Mine', color: accent),
+                    if (task.dueAt != null) OBadge(label: dayLabel(task.dueAt!), icon: Icons.calendar_today_outlined),
+                    if (task.commentCount > 0) OBadge(label: '${task.commentCount}', icon: Icons.chat_bubble_outline),
+                    if (assignedToMe) OBadge(label: 'Mine', color: accent),
                   ],
                 ),
                 if (task.assignees.isNotEmpty) ...[
                   const SizedBox(height: OrdoSpacing.sm),
-                  OAvatarStack(
-                    names: task.assignees.map((a) => a.name).toList(),
-                    images: task.assignees.map((a) => a.avatarUrl).toList(),
-                    radius: 11,
-                    max: 5,
-                  ),
+                  OAvatarStack(names: task.assignees.map((a) => a.name).toList(), images: task.assignees.map((a) => a.avatarUrl).toList(), radius: 11, max: 5),
                 ],
               ],
             ),
           ),
           const Icon(Icons.chevron_right, color: Colors.grey, size: 20),
         ],
-      ),
-    );
-  }
-}
-
-class _CreateTaskSheet extends ConsumerStatefulWidget {
-  final GroupDetail group;
-  final WidgetRef ref;
-  const _CreateTaskSheet({required this.group, required this.ref});
-
-  @override
-  ConsumerState<_CreateTaskSheet> createState() => _CreateTaskSheetState();
-}
-
-class _CreateTaskSheetState extends ConsumerState<_CreateTaskSheet> {
-  final _title = TextEditingController();
-  String _priority = 'MEDIUM';
-  DateTime? _due;
-  final Set<String> _assigneeIds = {};
-  bool _saving = false;
-
-  @override
-  void dispose() {
-    _title.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final title = _title.text.trim();
-    if (title.isEmpty) {
-      toast(context, 'Add a title', error: true);
-      return;
-    }
-    setState(() => _saving = true);
-    final api = widget.ref.read(apiClientProvider);
-    try {
-      await api.createTask({
-        'groupId': widget.group.id,
-        'title': title,
-        'priority': _priority,
-        if (_due != null) 'dueAt': _due!.toUtc().toIso8601String(),
-        if (_assigneeIds.isNotEmpty) 'assigneeIds': _assigneeIds.toList(),
-      });
-      widget.ref.invalidate(tasksProvider((groupId: widget.group.id, tab: 'all')));
-      widget.ref.invalidate(tasksProvider((groupId: widget.group.id, tab: 'mine')));
-      widget.ref.invalidate(groupDetailProvider(widget.group.id));
-      if (mounted) Navigator.pop(context);
-    } on ApiException catch (e) {
-      if (mounted) toast(context, e.message, error: true);
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(OrdoSpacing.xl, 0, OrdoSpacing.xl, OrdoSpacing.xxl),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('New task', style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: OrdoSpacing.lg),
-            TextField(
-              controller: _title,
-              autofocus: true,
-              textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(hintText: 'Task title'),
-            ),
-            const SizedBox(height: OrdoSpacing.md),
-            OField(
-              label: 'Priority',
-              child: DropdownButton<String>(
-                value: _priority,
-                underline: const SizedBox(),
-                isExpanded: true,
-                items: const [
-                  DropdownMenuItem(value: 'LOW', child: Text('Low')),
-                  DropdownMenuItem(value: 'MEDIUM', child: Text('Medium')),
-                  DropdownMenuItem(value: 'HIGH', child: Text('High')),
-                  DropdownMenuItem(value: 'URGENT', child: Text('Urgent')),
-                ],
-                onChanged: (v) => setState(() => _priority = v ?? 'MEDIUM'),
-              ),
-            ),
-            const SizedBox(height: OrdoSpacing.md),
-            OField(
-              label: 'Due date',
-              child: InkWell(
-                borderRadius: BorderRadius.circular(OrdoRadius.md),
-                onTap: () async {
-                  final d = await showDatePicker(
-                    context: context,
-                    initialDate: _due ?? DateTime.now().add(const Duration(days: 1)),
-                    firstDate: DateTime.now().subtract(const Duration(days: 1)),
-                    lastDate: DateTime(2100),
-                  );
-                  if (d != null) setState(() => _due = d);
-                },
-                child: InputDecorator(
-                  decoration: const InputDecoration(isDense: true),
-                  child: Text(
-                    _due == null ? 'No due date' : fmtDateLong(_due!),
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: _due == null ? cs.onSecondary : cs.onSurface,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: OrdoSpacing.md),
-            OField(
-              label: 'Assignees',
-              child: widget.group.members.isEmpty
-                  ? Text('No members to assign', style: TextStyle(fontSize: 13, color: cs.onSecondary))
-                  : Wrap(
-                      spacing: OrdoSpacing.sm,
-                      runSpacing: OrdoSpacing.sm,
-                      children: [
-                        for (final m in widget.group.members)
-                          FilterChip(
-                            label: Text(m.name),
-                            selected: _assigneeIds.contains(m.userId),
-                            avatar: OAvatar(name: m.name, imageUrl: m.avatarUrl, radius: 12),
-                            onSelected: (sel) => setState(() {
-                              if (sel) {
-                                _assigneeIds.add(m.userId);
-                              } else {
-                                _assigneeIds.remove(m.userId);
-                              }
-                            }),
-                          ),
-                      ],
-                    ),
-            ),
-            const SizedBox(height: OrdoSpacing.xl),
-            FilledButton(
-              onPressed: _saving ? null : _save,
-              child: _saving
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Create task'),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1240,13 +1130,7 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
       context: context,
       builder: (ctx) => SimpleDialog(
         title: Text('Change role for ${m.name}'),
-        children: [
-          for (final r in options)
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(ctx, r),
-              child: Text(r == m.role ? '$r (current)' : r),
-            ),
-        ],
+        children: [for (final r in options) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, r), child: Text(r == m.role ? '$r (current)' : r))],
       ),
     );
     if (chosen == null || chosen == m.role) return;
@@ -1264,13 +1148,7 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
   }
 
   Future<void> _remove(GroupMember m) async {
-    final ok = await confirm(
-      context,
-      title: 'Remove ${m.name}?',
-      message: 'They will lose access to this group.',
-      confirmText: 'Remove',
-      danger: true,
-    );
+    final ok = await confirm(context, title: 'Remove ${m.name}?', message: 'They will lose access to this group.', confirmText: 'Remove', danger: true);
     if (!ok) return;
     setState(() => _busy = true);
     try {
@@ -1300,11 +1178,7 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
       });
 
     if (members.isEmpty) {
-      return OEmptyState(
-        icon: Icons.people_outline,
-        title: 'No members',
-        subtitle: 'Invite people from the group menu.',
-      );
+      return const OEmptyState(icon: Icons.people_outline, title: 'No members', subtitle: 'Invite people from the group menu.');
     }
 
     return Stack(
@@ -1332,16 +1206,8 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            m.name,
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          Text(
-                            'Joined ${fmtDate(m.joinedAt)}',
-                            style: TextStyle(fontSize: 12, color: cs.onSecondary),
-                          ),
+                          Text(m.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          Text('Joined ${fmtDate(m.joinedAt)}', style: TextStyle(fontSize: 12, color: cs.onSecondary)),
                         ],
                       ),
                     ),
@@ -1357,16 +1223,10 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
                           }
                         },
                         itemBuilder: (_) => [
-                          // MEMBER_ROLE_UPDATE is OWNER-only server-side; hide the
-                          // option from ADMINs so they're never offered an action
-                          // that would 403. (MEMBER_REMOVE is ADMIN-level, so the
-                          // menu still shows to ADMINs for Remove.)
-                          if (widget.group.role == 'OWNER')
-                            const PopupMenuItem(value: 'role', child: Text('Change role')),
-                          PopupMenuItem(
-                            value: 'remove',
-                            child: Text('Remove', style: TextStyle(color: cs.error)),
-                          ),
+                          // MEMBER_ROLE_UPDATE is OWNER-only server-side; hide it
+                          // from ADMINs so they're never offered an action that 403s.
+                          if (widget.group.role == 'OWNER') const PopupMenuItem(value: 'role', child: Text('Change role')),
+                          PopupMenuItem(value: 'remove', child: Text('Remove', style: TextStyle(color: cs.error))),
                         ],
                       ),
                   ],
@@ -1381,11 +1241,7 @@ class _MembersTabState extends ConsumerState<_MembersTab> {
             bottom: 0,
             left: 0,
             right: 0,
-            child: Container(
-              color: Colors.black.withValues(alpha: 0.15),
-              alignment: Alignment.center,
-              child: const CircularProgressIndicator(),
-            ),
+            child: Container(color: Colors.black.withValues(alpha: 0.15), alignment: Alignment.center, child: const CircularProgressIndicator()),
           ),
       ],
     );
