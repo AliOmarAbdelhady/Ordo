@@ -758,6 +758,11 @@ class _BlockSkeleton extends StatelessWidget {
 // My groups
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Fixed height for the horizontal group mini-cards. Sized to fit the tallest
+/// card (avatar row + a 2-line badge wrap + next-event row) so content never
+/// overflows the carousel's cross-axis constraint.
+const double _groupCardHeight = 124;
+
 class _MyGroupsSection extends StatelessWidget {
   final AsyncValue<List<Group>> groupsAsync;
   const _MyGroupsSection({required this.groupsAsync});
@@ -768,7 +773,7 @@ class _MyGroupsSection extends StatelessWidget {
       loading: () => SliverToBoxAdapter(
         child: OSkeletonBox(
           SizedBox(
-            height: 90,
+            height: _groupCardHeight,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg),
@@ -810,7 +815,7 @@ class _MyGroupsSection extends StatelessWidget {
             children: [
               OSectionHeader(title: 'My groups · ${groups.length}'),
               SizedBox(
-                height: 92,
+                height: _groupCardHeight,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.lg),
@@ -841,7 +846,7 @@ class _GroupMiniCard extends StatelessWidget {
       onTap: () => context.push('/groups/${group.id}'),
       child: Container(
         width: 168,
-        padding: const EdgeInsets.all(OrdoSpacing.md),
+        padding: const EdgeInsets.symmetric(horizontal: OrdoSpacing.md, vertical: OrdoSpacing.sm),
         decoration: BoxDecoration(
           color: cs.surface,
           borderRadius: BorderRadius.circular(OrdoRadius.lg),

@@ -65,53 +65,59 @@ class _GroupsPageState extends ConsumerState<GroupsPage> {
 
     return Scaffold(
       body: SafeArea(
-        child: CustomScrollView(
-          slivers: [
-            SliverAppBar(
-              title: const Text('Groups'),
-              floating: true,
-              pinned: false,
-              snap: true,
-              actions: [
-                IconButton(
-                  tooltip: 'Join with code',
-                  icon: const Icon(Icons.qr_code_2_outlined),
-                  onPressed: _joinWithCode,
-                ),
-                IconButton(
-                  tooltip: 'New group',
-                  icon: const Icon(Icons.add),
-                  onPressed: () => context.push('/groups/create'),
-                ),
-              ],
-              bottom: PreferredSize(
-                preferredSize: const Size.fromHeight(60),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, 0, OrdoSpacing.lg, OrdoSpacing.md),
-                  child: TextField(
-                    controller: _search,
-                    onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
-                    decoration: InputDecoration(
-                      hintText: 'Search groups',
-                      isDense: true,
-                      prefixIcon: const Icon(Icons.search, size: 20),
-                      suffixIcon: _query.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.close, size: 18),
-                              onPressed: () {
-                                _search.clear();
-                                setState(() => _query = '');
-                              },
-                            )
-                          : null,
+        // RefreshIndicator is a box widget — it must wrap the scroll view, not
+        // live inside `slivers:`. Placing it in the sliver list makes the
+        // viewport receive a RenderBox where it expects a RenderSliver, which
+        // throws and swaps in an ErrorWidget → red "RenderSliver / RenderErrorBox"
+        // screen. Mirror the Today page: wrap the CustomScrollView.
+        child: RefreshIndicator(
+          onRefresh: () async => ref.invalidate(groupsProvider),
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              SliverAppBar(
+                title: const Text('Groups'),
+                floating: true,
+                pinned: false,
+                snap: true,
+                actions: [
+                  IconButton(
+                    tooltip: 'Join with code',
+                    icon: const Icon(Icons.qr_code_2_outlined),
+                    onPressed: _joinWithCode,
+                  ),
+                  IconButton(
+                    tooltip: 'New group',
+                    icon: const Icon(Icons.add),
+                    onPressed: () => context.push('/groups/create'),
+                  ),
+                ],
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(60),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(OrdoSpacing.lg, 0, OrdoSpacing.lg, OrdoSpacing.md),
+                    child: TextField(
+                      controller: _search,
+                      onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+                      decoration: InputDecoration(
+                        hintText: 'Search groups',
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        suffixIcon: _query.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: () {
+                                  _search.clear();
+                                  setState(() => _query = '');
+                                },
+                              )
+                            : null,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            RefreshIndicator(
-              onRefresh: () async => ref.invalidate(groupsProvider),
-              child: groupsAsync.when(
+              groupsAsync.when(
                 loading: () => SliverFillRemaining(
                   hasScrollBody: false,
                   child: _GroupListSkeleton(),
@@ -166,8 +172,8 @@ class _GroupsPageState extends ConsumerState<GroupsPage> {
                   );
                 },
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
