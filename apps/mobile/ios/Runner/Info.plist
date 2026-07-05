@@ -26,6 +26,17 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- App Transport Security: allow plain-HTTP backends during development.
+	     iOS blocks http:// requests by default, which silently breaks both Dio
+	     REST calls and the socket_io_client WebSocket connection. Tighten this
+	     (or remove it once the backend is HTTPS-only) before App Store release. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<!-- Reason strings shown when requesting location permission for opt-in
 	     group location sharing. Required by iOS or the app is rejected. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
